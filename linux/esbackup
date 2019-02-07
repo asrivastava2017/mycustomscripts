@@ -1,0 +1,96 @@
+For Scale, we have tested shared file system and AWS Cloud Plugin with Elasticsearch 2.4.
+
+Prerequisites
+An Elasticsearch cluster up and running
+A shared storage solution accessible by your nodes. One of the following is needed
+shared file system
+AWS Cloud Plugin for S3 repositories
+HDFS Plugin for Hadoop environments
+Azure Cloud Plugin for Azure storage repositories
+Shared File System
+In order to use a shared file system, the location must be mounted on all Elasticsearch nodes. This location must then be set in the path.repo setting on all nodes. Assuming that the shared filesystem is mounted to /mount/backups/my_backup, the following setting should be added to elasticsearch.yml file:
+
+path.repo: ["/mount/backups", "/mount/longterm_backups"]
+AWS S3 Bucket
+Using an S3 bucket requires the AWS plugin to be installed.
+
+This plugin can be installed using the plugin manager:
+
+sudo bin/plugin install cloud-aws
+The plugin must be installed on every node in the cluster, and each node must be restarted after installation.
+
+The plugin will default to using IAM Role credentials for authentication. These can be overridden by the following methods (ordered from lowest to highest order of precedence):
+
+Java system properties aws.accessKeyId and aws.secretKey
+Environment variables AWS_ACCESS_KEY_ID and AWS_SECRET_KEY
+The elasticsearch.yml config using cloud.aws.access_key and cloud.aws.secret_key:
+cloud.aws.access_key: XXXXXXXXXX
+cloud.aws.secret_key: XXXXXXXXXXXXXXXXXX
+Creating a Repository
+Two repositories should be created. One for backup of current indices, and one for long term storage of older indices.
+
+For an S3 repository:
+
+curl -XPUT http://<elasticurl>:9200/_snapshot/<repository_name> -d '{ "type": "s3", "settings": { "bucket": "<bucket_name>", "endpoint": "aws_endpoint", "base_path" : "folder/subfolder" }}'
+For a shared file system repository:
+
+curl -XPUT http://<elasticurl>:9200/_snapshot/<repository_name> -d '{ "type": "fs", "settings": { "location": "/folder/subfolder", "compress": true}}'
+Script Setup
+The following script can be used to do a full backup, and then backup and delete any old indices separately. it can be run as a job in DC/OS on a set schedule.
+
+#!/bin/bash
+
+ADDRESS=<elasticsearchurl>:9200
+#TWOYEARMARK=$(($(date -v-24S +'%s * 1000 + %-N / 1000000'))) # gets tick value for this time two years ago. OSX compatible command
+TWOYEARMARK=$(date -d "2 years ago" +"%s%3N") # gets tick value for this time two years ago. standard GNU command
+echo "two year mark set at $TWOYEARMARK"
+BUCKETNAME="s3 bucket name"
+AWSENDPOINT="aws endpoint"
+AWSBASEPATH="folder/subfolder"
+ARCHIVESNAPSHOTNAME="archive"
+MAINBACKUP="main-backup"
+
+echo "backing up current indices"
+curl -XPUT -s http://$ADDRESS/_snapshot/$MAINBACKUP/$CURRENTDATE?wait_for_completion=true -d '{ "ignore_unavailable": true, "include_global_state": false }'
+echo "backup complete."
+
+echo "retrieving list of current indicies"
+
+echo http://$ADDRESS/_cat/indices?h=i,cd
+indices=$(curl -s http://$ADDRESS/_cat/indices?h=i,cd)
+
+echo "retrieved the following indices"
+echo "$indices"
+
+echo "retrival complete. entering archival loop"
+
+while read -r OUTPUT 
+do
+    stringarray=($OUTPUT)
+
+    indexname=${stringarray[0]}
+    indexdate=${stringarray[1]}
+    echo "indexname: $indexname, indexdate: $indexdate"
+    if [ $indexdate -lt $TWOYEARMARK ]
+    then        
+        deleteindices=false
+        echo ""
+        echo "Index $indexname older than 2 years. Archiving....."
+        echo ""
+        curl -XPUT -s http://$ADDRESS/_snapshot/$ARCHIVESNAPSHOTNAME/$indexname?wait_for_completion=true -d '{ "indices": "'"$indexname"'", "ignore_unavailable": true, "include_global_state": false}'
+        echo ""
+
+        currentBackup=$(curl -s http://$ADDRESS/_snapshot/$ARCHIVESNAPSHOTNAME/$indexname)
+        if [[ $currentBackup = *'"state":"SUCCESS"'* ]]
+        then
+            DELETEINDCIES=true
+        fi
+
+        if [ "$deleteindices" = true ]           
+        then
+            echo "$indexname has been archived. deleting..."
+            deleteindices=false
+            curl -XDELETE http://$ADDRESS/$indexname
+        fi
+    fi
+done <<< "$indices"
