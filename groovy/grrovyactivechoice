@@ -1,0 +1,9 @@
+def choices=[]
+def file = new File('output.txt')
+file.delete()
+new File("output.txt") << new URL ("https://xycghbj/versions").getText()
+textFile= new File("output.txt")
+textFile.eachLine{
+choices.add(it)
+}
+return choices
