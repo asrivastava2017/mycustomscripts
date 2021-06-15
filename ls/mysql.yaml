@@ -1,0 +1,41 @@
+input {
+    cloudwatch_logs {
+        log_group => [ "/aws/rds/instance/mosaicmysqlrdspreprod/slowquery" ]
+        start_position => "beginning"
+        codec => multiline {
+        pattern => "^# Time:"
+        negate => true
+        what => "previous"
+      }
+    }
+}
+
+
+filter {
+
+    mutate {
+        gsub => ['message', "\n", " "]
+    }
+
+    grok {    
+        match => ["message", "%{GREEDYDATA}Time:%{SPACE}%{TIMESTAMP_ISO8601:mysql_slow_querydate} %{GREEDYDATA}User@Host: (?:%{USERNAME:mysql_slow_clientuser})\[(?:%{DATA:mysql_cluster})\] @ %{SPACE}\[(?:%{DATA:mysql_slow_clientip})\]%{SPACE}Id:%{SPACE}%{NUMBER:mysql_slow_id} %{GREEDYDATA}Query_time: %{NUMBER:mysql_slow_querytime:float}(?:%{SPACE})Lock_time: %{NUMBER:mysql_slow_locktime:float}(?:%{SPACE})Rows_sent: %{NUMBER:mysql_slow_rowssent:int}(?:%{SPACE})Rows_examined: %{NUMBER:mysql_slow_rowsexamined:int} %{WORD} %{WORD:mysql_db}; %{WORD} %{WORD}=%{NUMBER:mysql_slow_timestamp}; %{GREEDYDATA:mysql_slow_query};"]
+    }
+
+    mutate {
+    remove_field => [ "message", "@version", "tags" ]
+    gsub => [ "mysql_slow_query", "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", "NNNN" ]
+    }
+
+}
+
+output {
+  elasticsearch {
+    hosts => ["https://**************.us-east-1.es.amazonaws.com:443"]
+
+        index => "slowquery-%{+YYYY.MM.dd}"
+
+  }
+     stdout {
+     codec => rubydebug {}
+    }
+}
