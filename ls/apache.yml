@@ -1,0 +1,29 @@
+input {
+  file {
+    path => "/Users/animesh/Documents/elk/logstash-7.11.1/event-data/apache.log"
+  }
+}
+
+filter {
+
+mutate {  gsub => ["message","serviceName=",""] }
+  grok {
+    match => { "message" => "%{COMBINEDAPACHELOG} \"%{DATA:coid}\" \"%{NUMBER:responsetime:duration} ms\" \"%{GREEDYDATA:serviceName}\"" }
+  }
+
+  mutate {
+    remove_field => [ "message", "referrer", "agent" ]
+    convert => {
+      "response" => "integer"
+      "bytes" => "integer"
+      "responsetime" => "float"
+    }
+  }
+}
+
+output {
+  stdout {
+    codec => rubydebug
+  }
+}
+#### ::ffff:10.63.21.20 - - [10/Jun/2021:14:10:29 +0000] "POST /api/type/Folder/asset HTTP/1.1" 200 50 "-" "node-fetch/1.0 (+https://github.com/bitinn/node-fetch)" "6eb79e70-c9f5-11eb-85e9-85d8222fcb67" "22.069 ms" "serviceName=mosaic-asset-mgmt-service"
