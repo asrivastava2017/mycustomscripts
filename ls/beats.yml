@@ -1,0 +1,45 @@
+input {
+    beats {
+    port => 5044
+    host => "0.0.0.0"
+    }
+  }
+
+filter{
+
+   if [kubernetes][namespace] == "monitoring" or [kubernetes][namespace] == "kubernetes-dashboard"
+        {
+            drop {}
+        }
+
+   else if "HTTP/1.1" in [message] {
+        mutate {  gsub => ["message","serviceName=",""] }
+        grok {
+                match => { "message" => "%{COMBINEDAPACHELOG} \"%{DATA:x-correlation-id}\" \"%{NUMBER:responsetime:duration} ms\" \"%{GREEDYDATA:serviceName}\"" }
+        }
+        mutate {
+                rename => {
+                        "[kubernetes][namespace]" => "namespace"
+                    }
+                remove_field => [ "message", "referrer", "agent","tags", "host", "input", "ecs", "cloud", "log", "kubernetes", "@version"]
+                add_field => { "log_type" => "access" }
+                convert => {
+                        "response" => "integer"
+                        "bytes" => "integer"
+                        "responsetime" => "float"
+                        }
+                }
+        }
+    else {
+        mutate { add_field => { "log_type" => "unstructured" } }
+    }
+}
+ output {
+  elasticsearch {
+    hosts => ["https://search-logs-mosaic-preproduction-27xc4xasm2rra5ofxssmkvdua4.us-east-1.es.amazonaws.com:443"]
+
+        index => "%{log_type}-%{+YYYY.MM.dd}"
+
+  }
+   stdout { codec => rubydebug  }
+}
