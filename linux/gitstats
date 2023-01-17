@@ -1,0 +1,5 @@
+https://github.com/arzzen/git-quick-stats#macos-homebrew
+
+
+git clone https://github.com/arzzen/git-quick-stats.git && cd git-quick-stats
+sudo make install
