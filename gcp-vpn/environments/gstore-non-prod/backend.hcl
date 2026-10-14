@@ -1,6 +1,4 @@
-# Remote state location for this environment. The bucket must already exist
-# (versioning on), e.g.:
-#   gcloud storage buckets create gs://REPLACE-WITH-STATE-BUCKET --location=asia-south1 --uniform-bucket-level-access
-#   gcloud storage buckets update gs://REPLACE-WITH-STATE-BUCKET --versioning
+# Overwritten by `make bootstrap ENV=gstore-non-prod`, which creates the state bucket.
+# Using a bucket that already exists instead? Skip bootstrap and set its name here.
 bucket = "REPLACE-WITH-STATE-BUCKET"
 prefix = "pritunl/gstore-non-prod"

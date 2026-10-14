@@ -2,6 +2,8 @@
 .terraform.lock.hcl.bak
 *.tfstate
 *.tfstate.*
+# Keep the tiny bootstrap state (state bucket only, no secrets) in git.
+!environments/*/bootstrap.tfstate
 *.tfplan
 crash.log
 override.tf

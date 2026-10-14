@@ -4,7 +4,7 @@ variable "project_id" {
 }
 
 variable "location" {
-  description = "Key ring location. Must be the region of the disks it encrypts (e.g. asia-south1)."
+  description = "Key ring location. Must be the region of the disks it encrypts (e.g. us-central1)."
   type        = string
 }
 

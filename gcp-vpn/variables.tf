@@ -24,6 +24,28 @@ variable "labels" {
   default     = {}
 }
 
+# --- State bucket ---------------------------------------------------------------------
+# Read only by bootstrap/ (make bootstrap). Declared here so the shared tfvars file
+# does not trigger "undeclared variable" warnings in the main stack.
+
+variable "state_bucket_name" {
+  description = "Terraform state bucket name, used by bootstrap/. null = \"<project_id>-pritunl-tfstate\"."
+  type        = string
+  default     = null
+}
+
+variable "state_bucket_location" {
+  description = "State bucket location, used by bootstrap/. null = region."
+  type        = string
+  default     = null
+}
+
+variable "state_versions_to_keep" {
+  description = "Older state versions kept, used by bootstrap/."
+  type        = number
+  default     = 20
+}
+
 # --- Network --------------------------------------------------------------------------
 
 variable "vpc_name" {

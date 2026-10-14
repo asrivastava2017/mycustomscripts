@@ -3,14 +3,19 @@
 
 # --- Project & location (REPLACE the project ID; confirm region/zone) ------------------
 project_id = "REPLACE-WITH-GCP-PROJECT-ID"
-region     = "asia-south1"
-zone       = "asia-south1-a"
+region     = "us-central1"
+zone       = "us-central1-a"
 
 labels = {
   environment = "non-prod"
   team        = "gstore"
   managed-by  = "terraform"
 }
+
+# --- Terraform state bucket (used by `make bootstrap` only) ---------------------------
+# Defaults: name "<project_id>-pritunl-tfstate", location = region. Uncomment to override.
+# state_bucket_name     = "my-company-gstore-non-prod-tfstate"
+# state_bucket_location = "US"
 
 # --- Network --------------------------------------------------------------------------
 vpc_name    = "gstore-non-prod-pritunl-vpc"
@@ -45,7 +50,7 @@ peerings = []
 # --- Pritunl VM -----------------------------------------------------------------------
 vm_name           = "gstore-non-prod-pritunl"
 machine_type      = "e2-small"
-data_disk_size_gb = 20
+data_disk_size_gb = 80
 
 # --- Encryption -----------------------------------------------------------------------
 # true  = create a Cloud KMS key and encrypt the boot disk, data disk and snapshots with it.
