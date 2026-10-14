@@ -1,0 +1,106 @@
+# Pritunl open-source VPN on GCP (Terraform)
+
+Deploys Pritunl (Community edition) on a single VM in a new VPC, with no load balancer:
+
+- A new **VPC + subnet**. `plan` fails if the subnet or VPN client range overlaps any range in `reserved_cidrs`.
+- A **reserved static external IP** directly on the VM, plus a reserved internal IP.
+- A **stateful managed instance group of size 1**, with autohealing on a TCP 443 health check. A failed VM is recreated with the **same name, same IPs and same data disk**.
+- A **stateful data disk** holding MongoDB, `/etc/pritunl.conf` and `/var/lib/pritunl` (the Pritunl host ID). It has **daily snapshots**.
+- Firewall rules: the VPN UDP port is open to the internet; the console (TCP 443) is open only to admin IPs; SSH is IAP-only; the health-check ranges are allowed.
+- A least-privilege VM service account (logs and metrics only), Shielded VM, OS Login, and optional Ops Agent.
+- Optional **customer-managed encryption (CMEK)**. With `create_kms_key = true`, a Cloud KMS key ring and key are created and used for the boot disk, the data disk and its snapshots. With `false`, disks use Google-managed encryption.
+- Optional **VPC peering** to the VPCs that hold the private resources.
+
+```
+.
+├── main.tf / variables.tf / outputs.tf / versions.tf   # root: calls the modules
+├── Makefile
+├── environments/
+│   └── gstore-non-prod/
+│       ├── terraform.tfvars   # all environment values
+│       └── backend.hcl        # state bucket + prefix
+└── modules/
+    ├── kms/                   # key ring, crypto key, Compute Engine service agent grant
+    ├── network/               # VPC, subnet, overlap check, peerings
+    └── pritunl/               # IPs, disk, snapshots, firewall, template, health check, stateful MIG
+        └── templates/startup.sh.tftpl
+```
+
+## Deploy
+
+Prerequisites:
+- Terraform 1.5 or later and the gcloud CLI.
+- A GCS bucket for state (see `backend.hcl`).
+- Permissions in the project: roughly Compute Admin, Service Account Admin, Project IAM Admin and Service Usage Admin.
+- The organisation policy `constraints/compute.vmExternalIpAccess` must allow this VM to have an external IP.
+
+```bash
+# 1. Edit environments/gstore-non-prod/terraform.tfvars (project_id, region/zone, admin_source_ranges)
+#    and environments/gstore-non-prod/backend.hcl (state bucket).
+make plan  ENV=gstore-non-prod
+make apply ENV=gstore-non-prod
+```
+
+## After the first apply
+
+First boot installs MongoDB, OpenVPN, WireGuard and Pritunl, which takes about 5–10 minutes. Then:
+
+1. **DNS:** in Namecheap, create an A record (e.g. `vpn`) pointing to the `external_ip` output.
+2. **Console:** run the `initial_setup_commands` outputs to get the default password. Open `admin_url` from an admin IP and change the password.
+3. **Settings → Public Address:** set it to the Namecheap hostname, so client profiles use the name, not the IP.
+4. **Add a server:**
+   - Port and protocol: UDP `1194`. This must match `vpn_udp_ports`.
+   - Virtual Network: `vpn_client_cidr` (`10.201.0.0/24`).
+   - Enable TOTP two-step authentication.
+   - Remove the `0.0.0.0/0` route and add only the CIDRs users need, such as the peered VPC ranges, Atlas and Redis Cloud. Keep **NAT** ticked on each route.
+5. **Allow-lists:** VPN traffic leaves the VM from the `internal_ip` output (because NAT is on). Allow that IP, or `subnet_cidr`, in:
+   - peer-VPC firewall rules
+   - the MongoDB Atlas IP access list
+   - the Redis Cloud CIDR allow-list
+
+### Reaching private resources
+
+- **Same-project or other-project VPCs:** add them under `peerings`. Peering is **not transitive**. If Atlas or Redis Cloud is peered with another VPC, the Pritunl VPC cannot reach them through that VPC. Peer Atlas and Redis Cloud directly with `gstore-non-prod-pritunl-vpc`, or create Private Service Connect endpoints in this VPC's subnet.
+- **Several peerings:** GCP runs one peering operation per VPC at a time. If apply reports a concurrent-operation error, rerun it, or use `terraform apply -parallelism=1`.
+
+## Deploying to another GCP project
+
+```bash
+cp -r environments/gstore-non-prod environments/<new-env>
+# edit environments/<new-env>/terraform.tfvars and backend.hcl (new state prefix)
+make plan  ENV=<new-env>
+make apply ENV=<new-env>
+```
+
+No module or root `.tf` file needs to change.
+
+## Operations
+
+| Task | How |
+| --- | --- |
+| Test autohealing | SSH in, then `sudo systemctl stop pritunl`. After about 30 s of failed checks, the MIG recreates the VM with the same IP and disk. Users reconnect with their existing profiles. |
+| Change machine type or startup script | Edit the tfvars and apply. With `update_policy_type = "PROACTIVE"`, the VM is recreated during the apply, causing a short VPN outage. |
+| Grow the data disk | Raise `data_disk_size_gb` and apply. The filesystem is resized on the next boot. |
+| Restore from a snapshot | Create a disk from the snapshot, `terraform import` it over `module.pritunl.google_compute_disk.data` (or swap the disk in the per-instance config), then apply. |
+| Upgrade Pritunl and the OS | Recreate the VM (e.g. `gcloud compute instance-groups managed recreate-instances`). The fresh boot disk installs the latest packages, and the data disk is reused. |
+| Startup log | `/var/log/pritunl-startup.log` on the VM |
+
+## Encryption (CMEK)
+
+| `create_kms_key` | What happens |
+| --- | --- |
+| `true` | Creates a key ring and key in `region` (90-day rotation by default) and grants the Compute Engine service agent `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key. The boot disk, the data disk and every scheduled snapshot are encrypted with that key. |
+| `false` | Creates no KMS resources. Disks and snapshots use Google-managed encryption. |
+
+- **Choose before the first apply.** A disk's encryption can't be changed in place. Flipping the setting on an existing deployment makes Terraform **replace the data disk**, losing Pritunl's data unless you restore from a snapshot. Check `plan` for `google_compute_disk.data must be replaced`.
+- **The key is protected from deletion** (`prevent_destroy`). Destroying it would make the data disk and all snapshots unreadable, so `terraform destroy` stops at the key. To tear down on purpose, run `terraform state rm 'module.kms[0]'` first. The key stays in GCP, where old snapshots still need it.
+- **Key rings and keys can never be deleted in GCP.** Re-creating an environment with the same names fails with "already exists". Either import them (`terraform import 'module.kms[0].google_kms_key_ring.this' projects/<p>/locations/<region>/keyRings/<ring>`, and the same for the key) or use new names.
+- **Never disable or destroy key versions** while disks or snapshots use them. Rotation adds new versions; old ones must stay enabled.
+- The person running Terraform also needs Cloud KMS Admin on the project.
+
+## Things to know
+
+- **Zonal:** the VM and data disk live in one zone. A full zone outage needs a manual restore from a snapshot into another zone.
+- **`terraform destroy` deletes the data disk.** Snapshots are kept (`KEEP_AUTO_SNAPSHOTS`) until retention expires.
+- **MongoDB version:** `mongodb_version` is pinned because the data on the disk must match it. Upgrade one major version at a time.
+- **OS support:** the startup script targets Ubuntu 24.04, the Ubuntu release Pritunl documents. Pritunl's own testing focuses on RHEL-family distributions.

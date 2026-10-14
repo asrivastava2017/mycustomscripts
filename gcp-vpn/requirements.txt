@@ -1,0 +1,20 @@
+create a production grade terraform modules for setting up the pritunl opensource VPN.
+This VPN needs to be provisioned in a new VPC and Subnet and should not be overlapped with following IP range : 
+
+10.0.1.0/24
+10.0.2.0/24
+10.60.0.0/20
+10.127.0.0/16
+10.128.0.0/16
+10.1.0.0/20
+10.2.0.0/20
+10.64.0.0/14
+
+Don't put a load balancer in front of Pritunl. Give the VM a reserved static external IP directly. As you suggested.
+VM to recover automatically when it fails, use a managed instance group of size 1 that keeps its IP and disk (GCP calls this a "stateful" instance group). GCP recreates the VM if it fails a health check, and it comes back with the same static IP and the same disk, so Pritunl's local MongoDB data survives. 
+You get automatic recovery without paying for a load balancer.
+
+The terraform modeules should be re-usable to provision Pritunl in other GCP projects.
+Outside of the module the main files that call those modeules should also be present.
+It should be designed in such a way that changing the variables values in vars file outside modules is the only thing required when provisioning the set-up in other GCP projects.
+The name of the vpc is gstore-non-prod-pritunl-vpc and the name of the vm should be gstore-non-prod-pritunl.

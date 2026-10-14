@@ -1,0 +1,198 @@
+# Every environment-specific value lives in environments/<env>/terraform.tfvars.
+# Defaults here are sensible production values; override them per environment.
+
+# --- Project & location ---------------------------------------------------------------
+
+variable "project_id" {
+  description = "GCP project to deploy into."
+  type        = string
+}
+
+variable "region" {
+  description = "GCP region."
+  type        = string
+}
+
+variable "zone" {
+  description = "GCP zone for the VM and its data disk (inside region)."
+  type        = string
+}
+
+variable "labels" {
+  description = "Labels applied to all supported resources."
+  type        = map(string)
+  default     = {}
+}
+
+# --- Network --------------------------------------------------------------------------
+
+variable "vpc_name" {
+  description = "Name of the new VPC."
+  type        = string
+}
+
+variable "subnet_name" {
+  description = "Name of the new subnet."
+  type        = string
+}
+
+variable "subnet_cidr" {
+  description = "Subnet range for the Pritunl VM. Must not overlap reserved_cidrs."
+  type        = string
+}
+
+variable "vpn_client_cidr" {
+  description = "Range Pritunl hands out to VPN clients (set the same value as the Pritunl server's 'Virtual Network'). Checked for overlap only; Terraform does not configure Pritunl."
+  type        = string
+}
+
+variable "reserved_cidrs" {
+  description = "Ranges already in use (existing VPCs, GKE, on-prem). Plan fails if subnet_cidr or vpn_client_cidr overlaps any of them."
+  type        = list(string)
+  default     = []
+}
+
+variable "enable_flow_logs" {
+  description = "Enable VPC Flow Logs on the subnet."
+  type        = bool
+  default     = true
+}
+
+variable "peerings" {
+  description = "VPC peerings to existing VPCs whose private resources VPN users must reach. See modules/network/variables.tf."
+  type = list(object({
+    name                  = string
+    peer_network          = string
+    import_custom_routes  = optional(bool, false)
+    export_custom_routes  = optional(bool, false)
+    create_remote_peering = optional(bool, false)
+    remote_peering_name   = optional(string)
+  }))
+  default = []
+}
+
+# --- Pritunl VM -----------------------------------------------------------------------
+
+variable "vm_name" {
+  description = "Pritunl VM name (also prefixes its IPs, disk, MIG, firewall rules)."
+  type        = string
+}
+
+variable "machine_type" {
+  description = "VM machine type."
+  type        = string
+  default     = "e2-small"
+}
+
+variable "source_image" {
+  description = "Boot image or image family."
+  type        = string
+  default     = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
+}
+
+variable "boot_disk_size_gb" {
+  description = "Boot disk size (GB)."
+  type        = number
+  default     = 20
+}
+
+variable "data_disk_size_gb" {
+  description = "Stateful data disk size (GB)."
+  type        = number
+  default     = 20
+}
+
+variable "internal_ip_address" {
+  description = "Fixed internal IP for the VM, or null to pick one."
+  type        = string
+  default     = null
+}
+
+variable "mongodb_version" {
+  description = "MongoDB apt repo version. Keep pinned."
+  type        = string
+  default     = "8.0"
+}
+
+variable "install_ops_agent" {
+  description = "Install the Google Cloud Ops Agent."
+  type        = bool
+  default     = true
+}
+
+# --- Encryption -----------------------------------------------------------------------
+
+variable "create_kms_key" {
+  description = "true = create a Cloud KMS key and encrypt the VM disks and snapshots with it (CMEK). false = Google-managed encryption. Decide before the first apply: switching later replaces the data disk."
+  type        = bool
+  default     = false
+}
+
+variable "kms_key_ring_name" {
+  description = "Key ring name (used when create_kms_key = true). Key rings can never be deleted, so keep it stable."
+  type        = string
+  default     = "pritunl-keyring"
+}
+
+variable "kms_key_name" {
+  description = "Crypto key name (used when create_kms_key = true)."
+  type        = string
+  default     = "pritunl-disk-key"
+}
+
+variable "kms_key_rotation_period" {
+  description = "Automatic key rotation period, seconds with an 's' suffix. Default 90 days."
+  type        = string
+  default     = "7776000s"
+}
+
+variable "kms_protection_level" {
+  description = "SOFTWARE or HSM."
+  type        = string
+  default     = "SOFTWARE"
+}
+
+# --- Access ---------------------------------------------------------------------------
+
+variable "vpn_udp_ports" {
+  description = "UDP ports of the Pritunl servers, as configured in the Pritunl UI."
+  type        = list(string)
+  default     = ["1194"]
+}
+
+variable "admin_source_ranges" {
+  description = "Public CIDRs allowed to reach the Pritunl console (TCP 443)."
+  type        = list(string)
+}
+
+variable "enable_http_for_letsencrypt" {
+  description = "Open TCP 80 for Let's Encrypt certificate issuance on the console."
+  type        = bool
+  default     = false
+}
+
+# --- Operations -----------------------------------------------------------------------
+
+variable "autohealing_initial_delay_sec" {
+  description = "Grace period before autohealing checks a new VM."
+  type        = number
+  default     = 600
+}
+
+variable "update_policy_type" {
+  description = "PROACTIVE or OPPORTUNISTIC rollout of template changes."
+  type        = string
+  default     = "PROACTIVE"
+}
+
+variable "snapshot_start_time" {
+  description = "Daily snapshot time (UTC, HH:00)."
+  type        = string
+  default     = "02:00"
+}
+
+variable "snapshot_retention_days" {
+  description = "Days to keep snapshots."
+  type        = number
+  default     = 14
+}
