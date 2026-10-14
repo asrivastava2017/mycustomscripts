@@ -41,6 +41,22 @@ make plan  ENV=gstore-non-prod
 make apply ENV=gstore-non-prod
 ```
 
+## Admin SSH access
+
+List admins in `admin_members` (prefer a Google group). For each one, Terraform grants three roles:
+- `roles/iap.tunnelResourceAccessor` on the project;
+- `roles/compute.osAdminLogin` on the project, or `roles/compute.osLogin` if `admin_sudo = false`;
+- `roles/iam.serviceAccountUser` on the VM's service account only.
+
+Admins log in as themselves, with their own SSH key:
+
+```bash
+gcloud compute os-login ssh-keys add --key-file=~/.ssh/id_ed25519.pub --ttl=90d
+gcloud compute ssh gstore-non-prod-pritunl --zone <zone> --tunnel-through-iap
+```
+
+The project-level roles also apply to any other OS Login VM in the same project.
+
 ## After the first apply
 
 First boot installs MongoDB, OpenVPN, WireGuard and Pritunl, which takes about 5–10 minutes. Then:
@@ -84,6 +100,18 @@ No module or root `.tf` file needs to change.
 | Restore from a snapshot | Create a disk from the snapshot, `terraform import` it over `module.pritunl.google_compute_disk.data` (or swap the disk in the per-instance config), then apply. |
 | Upgrade Pritunl and the OS | Recreate the VM (e.g. `gcloud compute instance-groups managed recreate-instances`). The fresh boot disk installs the latest packages, and the data disk is reused. |
 | Startup log | `/var/log/pritunl-startup.log` on the VM |
+
+## HTTPS certificate (Let's Encrypt)
+
+The Pritunl web server (admin console and profile pages) uses a self-signed certificate by default. To get a trusted certificate:
+
+1. Set `letsencrypt_domain = "vpn.<your-domain>"` in tfvars and apply. This opens TCP 80 to the internet. Let's Encrypt needs that port for the first issuance and for every automatic renewal, so it stays open while a domain is set.
+2. In Namecheap, create an A record for that hostname pointing to the `external_ip` output.
+3. Within an hour, a timer on the VM (`pritunl-acme.timer`) sees that the hostname resolves to the static IP. It then runs `pritunl set app.acme_domain <domain>` and `pritunl renew-ssl-cert`, and restarts Pritunl once to load the certificate, so connected VPN users reconnect. After that, Pritunl renews the certificate itself.
+
+Check progress with `journalctl -u pritunl-acme`. The certificate is stored in MongoDB on the data disk, so it survives VM rebuilds. Changing `letsencrypt_domain` later changes the startup script, so the VM is recreated during that apply.
+
+This is only the web server's certificate. VPN tunnels are encrypted with Pritunl's own certificates and keys.
 
 ## Encryption (CMEK)
 

@@ -51,7 +51,7 @@ data_disk_size_gb = 20
 # true  = create a Cloud KMS key and encrypt the boot disk, data disk and snapshots with it.
 # false = Google-managed encryption (no KMS resources created).
 # Decide before the first apply: switching later replaces the data disk.
-create_kms_key          = true
+create_kms_key          = false
 kms_key_ring_name       = "gstore-non-prod-pritunl-keyring"
 kms_key_name            = "gstore-non-prod-pritunl-disk-key"
 kms_key_rotation_period = "7776000s" # 90 days
@@ -65,7 +65,21 @@ admin_source_ranges = [
   "203.0.113.10/32",
 ]
 
-enable_http_for_letsencrypt = false
+# Let's Encrypt certificate for the Pritunl web console / profile pages.
+# Set to the Namecheap hostname (e.g. "vpn.example.com") to get a trusted certificate:
+# opens TCP 80 (needed for issuance and renewal) and the VM requests the certificate
+# within an hour of the A record pointing at the static IP. null = self-signed.
+letsencrypt_domain = null
+
+# Who can SSH to the VM (IAP + OS Login, with their own Google identity and SSH key).
+# Terraform grants: IAP tunnel access, OS Login (sudo if admin_sudo = true), and
+# serviceAccountUser on the VM's service account only. Prefer a group.
+# REPLACE with your admin group or users.
+admin_members = [
+  # "group:gstore-vpn-admins@company.com",
+  # "user:alice@company.com",
+]
+admin_sudo = true
 
 # --- Operations -----------------------------------------------------------------------
 snapshot_start_time     = "02:00"

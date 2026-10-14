@@ -79,9 +79,11 @@ module "pritunl" {
   mongodb_version   = var.mongodb_version
   install_ops_agent = var.install_ops_agent
 
-  vpn_udp_ports               = var.vpn_udp_ports
-  admin_source_ranges         = var.admin_source_ranges
-  enable_http_for_letsencrypt = var.enable_http_for_letsencrypt
+  vpn_udp_ports       = var.vpn_udp_ports
+  admin_source_ranges = var.admin_source_ranges
+  admin_members       = var.admin_members
+  admin_sudo          = var.admin_sudo
+  letsencrypt_domain  = var.letsencrypt_domain
 
   autohealing_initial_delay_sec = var.autohealing_initial_delay_sec
   update_policy_type            = var.update_policy_type

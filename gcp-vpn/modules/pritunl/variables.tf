@@ -121,6 +121,25 @@ variable "install_ops_agent" {
   default     = true
 }
 
+# --- Admin SSH access -----------------------------------------------------------------
+
+variable "admin_members" {
+  description = "Principals allowed to SSH to the VM via IAP + OS Login, e.g. \"group:vpn-admins@company.com\" or \"user:alice@company.com\". Prefer groups."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for m in var.admin_members : can(regex("^(user|group|serviceAccount|domain):.+", m))])
+    error_message = "Each admin_members entry must start with user:, group:, serviceAccount: or domain:."
+  }
+}
+
+variable "admin_sudo" {
+  description = "true = roles/compute.osAdminLogin (sudo). false = roles/compute.osLogin (no sudo)."
+  type        = bool
+  default     = true
+}
+
 # --- Firewall -------------------------------------------------------------------------
 
 variable "vpn_udp_ports" {
@@ -145,10 +164,15 @@ variable "admin_source_ranges" {
   }
 }
 
-variable "enable_http_for_letsencrypt" {
-  description = "Open TCP 80 to the internet so Pritunl can issue/renew a Let's Encrypt certificate for the console."
-  type        = bool
-  default     = false
+variable "letsencrypt_domain" {
+  description = "Domain (e.g. vpn.example.com) for a Let's Encrypt certificate on the Pritunl web server. When set, TCP 80 is opened to the internet (needed for issuance and automatic renewal) and the VM requests the certificate once the domain's A record points at the static IP. null = self-signed certificate, port 80 closed."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.letsencrypt_domain == null || can(regex("^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\\.)+[a-z]{2,}$", var.letsencrypt_domain))
+    error_message = "letsencrypt_domain must be a lowercase fully qualified domain name, e.g. vpn.example.com."
+  }
 }
 
 variable "iap_ssh_source_ranges" {

@@ -18,3 +18,126 @@ The terraform modeules should be re-usable to provision Pritunl in other GCP pro
 Outside of the module the main files that call those modeules should also be present.
 It should be designed in such a way that changing the variables values in vars file outside modules is the only thing required when provisioning the set-up in other GCP projects.
 The name of the vpc is gstore-non-prod-pritunl-vpc and the name of the vm should be gstore-non-prod-pritunl.
+
+
+Machine Type Change : 
+
+Pritunl's data survives a machine-type change, because it lives on the separate data disk, which is never replaced.
+
+What happens when you change machine_type and apply:
+
+Terraform creates a new instance template, since GCP templates can't be edited, and points the instance group at it.
+The instance group recreates gstore-non-prod-pritunl in place. The update policy is set to recreate, not to create a second VM alongside.
+The new VM comes back with:
+the same name;
+the same static public IP and internal IP;
+the same data disk;
+the same encryption key.
+Only the boot disk is new. The startup script reinstalls Pritunl and mounts the data disk. It then reuses the saved Pritunl config and host ID, so Pritunl starts up as the same server with all users, organisations and certificates intact.
+What I checked: I ran a mock apply with e2-small and then planned e2-medium. Only the instance template changed. The data disk, the IPs, the per-instance config and the KMS key were untouched. One limitation: the fake provider can't model GCP's "must replace" rule, so it reported the template as "updated in-place". A real plan will show the template as replaced. That's expected and harmless.
+
+Before you apply:
+
+Expect about 5–10 minutes of downtime. There's only one VM, and the fresh boot disk reinstalls the packages. Pritunl clients reconnect on their own. Do it in a maintenance window.
+
+Snapshot the data disk first as a precaution:
+gcloud compute disks snapshot gstore-non-prod-pritunl-data --zone=<zone> --snapshot-names=pre-resize-$(date +%Y%m%d)
+
+Read the plan. It should show:
+
+the instance template replaced;
+the instance group updated in place.
+If it shows google_compute_disk.data, google_compute_address or google_compute_per_instance_config being replaced, stop.
+
+Stay within machine families that support pd-balanced disks (e2, n2, n2d, c3). Newer families such as n4 and c4 accept only Hyperdisk, so the data disk wouldn't attach and the VM wouldn't start.
+
+Pritunl may be upgraded too. The reinstall pulls the latest Pritunl package, so a resize can also upgrade Pritunl. MongoDB stays on the pinned version (8.0).
+
+Only if you set update_policy_type = "OPPORTUNISTIC": the new size waits until the VM is next recreated. Apply it with gcloud compute instance-groups managed recreate-instances gstore-non-prod-pritunl-mig --instances=gstore-non-prod-pritunl --zone=<zone>. With the default PROACTIVE, the apply does it automatically.
+
+
+Concurrent Users Handling :
+
+For 60–70 concurrent users, use e2-medium (2 shared vCPUs, 4 GB RAM, about $25 a month). If this becomes production with steady daily traffic, use e2-standard-2 instead (2 full vCPUs, 8 GB, about $50 a month).
+
+Why e2-medium is enough:
+
+60–70 users reaching databases (Atlas, Redis Cloud, Cloud SQL), SSH and internal web apps is light traffic, typically tens to a few hundred Mbps in total. Two vCPUs handle that comfortably.
+At 4 GB it has double e2-small's RAM, which leaves plenty of room for MongoDB, Pritunl and the OS.
+e2-small would probably work too, but 60–70 users is above the ~50 where I'd stop relying on it.
+When to step up to e2-standard-2:
+
+Shared-core throttling: e2-medium shares its cores, so it can burst but gets throttled under sustained load. Step up if CPU stays above ~70% at peak in Cloud Monitoring.
+Slow sessions: step up if users report slow connections while large transfers run, such as database dumps or big file copies.
+You can change it later without losing data. A resize keeps the same IP and data disk, with a few minutes of VPN downtime.
+
+To apply it, change this line in terraform.tfvars:47:
+
+
+machine_type      = "e2-medium"
+Do this before your first apply and it costs nothing extra in downtime.
+
+
+
+1. Admin web console
+First login (one time):
+
+Get the commands from Terraform:
+
+terraform output initial_setup_commands
+Run the default-password one. It SSHes in through Google's Identity-Aware Proxy (IAP) and prints the initial admin username and password:
+
+gcloud compute ssh gstore-non-prod-pritunl --project <project> --zone <zone> \
+  --tunnel-through-iap --command 'sudo pritunl default-password'
+From an IP listed in admin_source_ranges, open https://<external_ip>, or https://vpn.<your-domain> once the Namecheap record exists. Accept the self-signed certificate warning.
+Log in. In the setup dialog that appears:
+change the username and password;
+set Public Address to your Namecheap hostname;
+optionally set a Let's Encrypt domain. That needs enable_http_for_letsencrypt = true for the issuance.
+The startup script already points Pritunl at its local MongoDB, so you shouldn't be asked for a setup key. If you are, run sudo pritunl setup-key the same way.
+
+SSH access needs these roles for each admin: roles/iap.tunnelResourceAccessor, roles/compute.osAdminLogin, and roles/iam.serviceAccountUser on the VM's service account.
+
+Day to day, from anywhere: connect to the VPN yourself, then open https://<internal_ip>. For this to work, the Pritunl server needs a route for 10.200.0.0/24.
+
+Gap in the current code: if you're off the allow-listed IPs and the VPN is down, there's no way in. The IAP firewall rule only opens port 22. I can add 443 to it, so you could tunnel to the console with gcloud compute start-iap-tunnel gstore-non-prod-pritunl 443 --local-host-port=localhost:8443 ... and open https://localhost:8443. Want me to add that?
+
+2. Managing users (in the console)
+Users → Add Organization (e.g. gstore).
+Servers → Add Server:
+Port: 1194, UDP. This must match vpn_udp_ports.
+Virtual Network: 10.201.0.0/24.
+Turn on two-step authentication (OTP).
+Remove the 0.0.0.0/0 route. Add only the networks users need, such as the peered VPCs, Atlas, Redis Cloud and 10.200.0.0/24. Keep NAT ticked on each.
+Attach Organization to the server, then Start Server.
+Users → Add User: name, email, optional PIN.
+Give the user their profile: click the link icon on the user to get a temporary profile link. The user imports it in the Pritunl client and scans the OTP QR code.
+Offboarding: Disable or delete the user. Their profile stops working right away.
+3. Connecting to MongoDB
+There are two different MongoDBs here.
+
+a) Pritunl's own MongoDB on the VM. It listens on 127.0.0.1 only and has no password, so it's reachable only from the VM itself.
+
+On the VM:
+
+gcloud compute ssh gstore-non-prod-pritunl --zone <zone> --tunnel-through-iap
+mongosh mongodb://127.0.0.1:27017/pritunl
+From your laptop, for example with MongoDB Compass, tunnel through IAP:
+
+gcloud compute ssh gstore-non-prod-pritunl --zone <zone> --tunnel-through-iap -- -N -L 27017:127.0.0.1:27017
+# then connect Compass to mongodb://localhost:27017/pritunl
+Use this for inspection or backups (mongodump), not edits. Changing Pritunl's collections by hand can break it; manage everything through the console.
+
+b) Your application databases on MongoDB Atlas.
+
+Connect to the Pritunl VPN.
+Use Atlas's private connection string (peering or private endpoint) in mongosh or Compass.
+That works only once all three of these are in place:
+
+the Atlas network range is a route on the Pritunl server;
+the VM's internal_ip (the terraform output internal_ip value) is in the Atlas IP access list;
+Atlas is peered with, or has a Private Service Connect endpoint in, gstore-non-prod-pritunl-vpc.
+
+
+
+If you need scripted onboarding on the free edition anyway, I can write a small Python script against the console's endpoints. It would create users in an organisation from a CSV and print their profile links, with the admin password read from Secret Manager. Since those endpoints aren't official, test it against your Pritunl version before relying on it.

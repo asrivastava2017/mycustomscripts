@@ -10,6 +10,7 @@ DATA_DEVICE="/dev/disk/by-id/google-${data_device_name}"
 DATA_MOUNT="${data_mount_path}"
 MONGODB_VERSION="${mongodb_version}"
 INSTALL_OPS_AGENT="${install_ops_agent}"
+LETSENCRYPT_DOMAIN="${letsencrypt_domain}"
 
 # --- 1. Mount the stateful data disk -------------------------------------------------
 for _ in $(seq 1 60); do
@@ -122,7 +123,73 @@ fi
 systemctl enable pritunl
 systemctl restart pritunl
 
-# --- 6. Optional: Google Cloud Ops Agent for logs and metrics -------------------------
+# --- 6. Optional: Let's Encrypt certificate for the web server ------------------------
+# A timer checks hourly until the domain's A record points at this VM's static IP, then
+# sets the domain in Pritunl and requests the certificate once. Pritunl renews it itself.
+# The certificate lives in MongoDB on the data disk, so a rebuilt VM keeps it.
+cat > /etc/default/pritunl-acme <<EOF
+ACME_DOMAIN="$LETSENCRYPT_DOMAIN"
+MARKER_DIR="$DATA_MOUNT/pritunl"
+EOF
+
+cat > /usr/local/sbin/pritunl-acme.sh <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+. /etc/default/pritunl-acme
+[ -n "$ACME_DOMAIN" ] || exit 0
+MARKER="$MARKER_DIR/acme-$ACME_DOMAIN.done"
+[ -f "$MARKER" ] && exit 0
+
+EXT_IP="$(curl -fsS -H 'Metadata-Flavor: Google' \
+  http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip)"
+DNS_IP="$(getent ahostsv4 "$ACME_DOMAIN" | awk 'NR==1 {print $1}')"
+if [ "$DNS_IP" != "$EXT_IP" ]; then
+  echo "pritunl-acme: $ACME_DOMAIN resolves to '$DNS_IP', expected $EXT_IP; retrying later"
+  exit 0
+fi
+
+pritunl set app.acme_domain "$ACME_DOMAIN"
+if pritunl renew-ssl-cert; then
+  touch "$MARKER"
+  systemctl restart pritunl   # load the new certificate (VPN clients reconnect)
+  echo "pritunl-acme: certificate issued for $ACME_DOMAIN"
+else
+  echo "pritunl-acme: certificate request failed; retrying later"
+fi
+EOF
+chmod 755 /usr/local/sbin/pritunl-acme.sh
+
+cat > /etc/systemd/system/pritunl-acme.service <<'EOF'
+[Unit]
+Description=Request Let's Encrypt certificate for Pritunl
+After=pritunl.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pritunl-acme.sh
+EOF
+
+cat > /etc/systemd/system/pritunl-acme.timer <<'EOF'
+[Unit]
+Description=Hourly Let's Encrypt check for Pritunl
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+
+if [ -n "$LETSENCRYPT_DOMAIN" ]; then
+  systemctl enable --now pritunl-acme.timer
+else
+  systemctl disable --now pritunl-acme.timer 2>/dev/null || true
+fi
+
+# --- 7. Optional: Google Cloud Ops Agent for logs and metrics -------------------------
 if [ "$INSTALL_OPS_AGENT" = "true" ] && ! systemctl is-active --quiet google-cloud-ops-agent; then
   curl -sSfL https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh -o /tmp/add-ops-agent.sh
   bash /tmp/add-ops-agent.sh --also-install || echo "ops agent install failed; continuing"

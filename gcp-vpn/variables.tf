@@ -165,10 +165,22 @@ variable "admin_source_ranges" {
   type        = list(string)
 }
 
-variable "enable_http_for_letsencrypt" {
-  description = "Open TCP 80 for Let's Encrypt certificate issuance on the console."
+variable "admin_members" {
+  description = "Principals allowed to SSH to the VM via IAP + OS Login (e.g. group:vpn-admins@company.com). Terraform grants them the IAP tunnel role, the OS Login role and serviceAccountUser on the VM service account."
+  type        = list(string)
+  default     = []
+}
+
+variable "admin_sudo" {
+  description = "Give admin_members sudo on the VM (osAdminLogin) instead of plain login (osLogin)."
   type        = bool
-  default     = false
+  default     = true
+}
+
+variable "letsencrypt_domain" {
+  description = "Domain for a Let's Encrypt certificate on the Pritunl web server (e.g. vpn.example.com). Opens TCP 80 for issuance/renewal. null = self-signed certificate."
+  type        = string
+  default     = null
 }
 
 # --- Operations -----------------------------------------------------------------------

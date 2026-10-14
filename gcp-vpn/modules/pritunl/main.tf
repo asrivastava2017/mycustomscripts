@@ -28,6 +28,40 @@ resource "google_project_iam_member" "pritunl" {
   member  = "serviceAccount:${google_service_account.pritunl.email}"
 }
 
+# --- Admin SSH access (IAP + OS Login) ------------------------------------------------
+# Project-level, because MIG-managed VMs lose instance-level IAM when they are recreated.
+# Note: these roles also apply to any other OS Login VM in the project.
+
+locals {
+  admin_project_roles = [
+    "roles/iap.tunnelResourceAccessor",
+    var.admin_sudo ? "roles/compute.osAdminLogin" : "roles/compute.osLogin",
+  ]
+
+  admin_project_bindings = {
+    for pair in setproduct(var.admin_members, local.admin_project_roles) :
+    "${pair[0]}|${pair[1]}" => { member = pair[0], role = pair[1] }
+  }
+}
+
+resource "google_project_iam_member" "admin" {
+  for_each = local.admin_project_bindings
+
+  project = var.project_id
+  role    = each.value.role
+  member  = each.value.member
+}
+
+# Required by OS Login because the VM runs as this service account. Scoped to this
+# service account only; it does not hand out its keys.
+resource "google_service_account_iam_member" "admin_sa_user" {
+  for_each = toset(var.admin_members)
+
+  service_account_id = google_service_account.pritunl.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = each.value
+}
+
 # --- Addresses ------------------------------------------------------------------------
 
 resource "google_compute_address" "external" {
@@ -159,7 +193,8 @@ resource "google_compute_firewall" "iap_ssh" {
 }
 
 resource "google_compute_firewall" "letsencrypt" {
-  count = var.enable_http_for_letsencrypt ? 1 : 0
+  # Stays open while a domain is set: Pritunl renews the certificate automatically.
+  count = var.letsencrypt_domain == null ? 0 : 1
 
   project       = var.project_id
   name          = "${var.name}-allow-http-letsencrypt"
@@ -229,10 +264,11 @@ resource "google_compute_instance_template" "pritunl" {
     enable-oslogin         = "TRUE"
     block-project-ssh-keys = "TRUE"
     startup-script = templatefile("${path.module}/templates/startup.sh.tftpl", {
-      data_device_name  = local.data_device_name
-      data_mount_path   = local.data_mount_path
-      mongodb_version   = var.mongodb_version
-      install_ops_agent = var.install_ops_agent
+      data_device_name   = local.data_device_name
+      data_mount_path    = local.data_mount_path
+      mongodb_version    = var.mongodb_version
+      install_ops_agent  = var.install_ops_agent
+      letsencrypt_domain = var.letsencrypt_domain == null ? "" : var.letsencrypt_domain
     })
   }
 
