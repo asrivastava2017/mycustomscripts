@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Pritunl startup script (rendered by Terraform). Runs on every boot and is idempotent.
-# The boot disk is disposable: the MIG recreates it on autoheal. Everything that must
-# survive (MongoDB data, /etc/pritunl.conf, /var/lib/pritunl) lives on the stateful data disk.
+# Supports RHEL-family images (Rocky/Alma/Oracle Linux 9, Pritunl's tested platform)
+# and Ubuntu. The boot disk is disposable: the MIG recreates it on autoheal. Everything
+# that must survive lives on the stateful data disk and is bind-mounted onto the
+# standard paths, so packages and SELinux policies see their usual locations:
+#   <data disk>/mongodb      -> MongoDB dbPath (/var/lib/mongo or /var/lib/mongodb)
+#   <data disk>/pritunl/lib  -> /var/lib/pritunl (Pritunl host ID)
 set -euo pipefail
 exec > >(tee -a /var/log/pritunl-startup.log) 2>&1
 echo "=== pritunl startup $(date -Is) ==="
@@ -12,12 +16,30 @@ MONGODB_VERSION="${mongodb_version}"
 INSTALL_OPS_AGENT="${install_ops_agent}"
 LETSENCRYPT_DOMAIN="${letsencrypt_domain}"
 
+. /etc/os-release
+case " $ID $ID_LIKE " in
+  *" rhel "*|*" fedora "*|*" centos "*) OS_FAMILY=rhel ;;
+  *" debian "*|*" ubuntu "*)            OS_FAMILY=debian ;;
+  *) echo "unsupported OS: $ID"; exit 1 ;;
+esac
+echo "OS: $PRETTY_NAME ($OS_FAMILY), kernel $(uname -r)"
+
+# Bind-mount SRC onto DST, persisted in fstab and ordered after the data disk mount.
+bind_mount() {
+  local src="$1" dst="$2"
+  mkdir -p "$src" "$dst"
+  grep -qE "^[^#]*[[:space:]]$dst[[:space:]]" /etc/fstab || \
+    echo "$src $dst none bind,nofail,x-systemd.requires-mounts-for=$DATA_MOUNT 0 0" >> /etc/fstab
+  mountpoint -q "$dst" || mount "$dst"
+}
+
 # --- 1. Mount the stateful data disk -------------------------------------------------
+echo "### $(date -u +%T) step 1: data disk"
 for _ in $(seq 1 60); do
   [ -b "$DATA_DEVICE" ] && break
   echo "waiting for $DATA_DEVICE"; sleep 5
 done
-[ -b "$DATA_DEVICE" ] || { echo "data disk $DATA_DEVICE not found"; exit 1; }
+[ -b "$DATA_DEVICE" ] || { echo "ERROR: data disk $DATA_DEVICE not found"; exit 1; }
 
 if ! blkid "$DATA_DEVICE" >/dev/null 2>&1; then
   echo "formatting new data disk"
@@ -31,64 +53,113 @@ grep -q "$DATA_UUID" /etc/fstab || \
 mountpoint -q "$DATA_MOUNT" || mount "$DATA_MOUNT"
 resize2fs "$DATA_DEVICE" || true   # picks up a disk resize done in Terraform
 
-mkdir -p "$DATA_MOUNT/mongodb" "$DATA_MOUNT/pritunl/lib"
-
-# /var/lib/pritunl holds the host ID; bind-mount it from the data disk so a rebuilt VM is the same Pritunl host.
-mkdir -p /var/lib/pritunl
-grep -q " /var/lib/pritunl " /etc/fstab || \
-  echo "$DATA_MOUNT/pritunl/lib /var/lib/pritunl none bind,nofail,x-systemd.requires-mounts-for=$DATA_MOUNT 0 0" >> /etc/fstab
-mountpoint -q /var/lib/pritunl || mount /var/lib/pritunl
+# Before installing Pritunl, so the package writes its host ID onto the data disk.
+bind_mount "$DATA_MOUNT/pritunl/lib" /var/lib/pritunl
 
 # --- 2. Install packages (only on a fresh boot disk) ---------------------------------
-if ! dpkg -s pritunl >/dev/null 2>&1; then
+echo "### $(date -u +%T) step 2: packages"
+if ! command -v pritunl >/dev/null 2>&1; then
   echo "installing MongoDB $MONGODB_VERSION, OpenVPN, WireGuard and Pritunl"
-  . /etc/os-release
-  CODENAME="$VERSION_CODENAME"
 
-  # Stop services from auto-starting during install; they are configured first.
-  printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
-  chmod +x /usr/sbin/policy-rc.d
+  if [ "$OS_FAMILY" = rhel ]; then
+    RHEL_MAJOR="$(echo "$VERSION_ID" | cut -d. -f1)"
+    cat > /etc/yum.repos.d/mongodb-org.repo <<EOF
+[mongodb-org-$MONGODB_VERSION]
+name=MongoDB Repository
+baseurl=https://repo.mongodb.org/yum/redhat/$RHEL_MAJOR/mongodb-org/$MONGODB_VERSION/x86_64/
+gpgcheck=1
+enabled=1
+gpgkey=https://pgp.mongodb.com/server-$MONGODB_VERSION.asc
+EOF
+    cat > /etc/yum.repos.d/pritunl.repo <<EOF
+[pritunl]
+name=Pritunl Repository
+baseurl=https://repo.pritunl.com/stable/yum/oraclelinux/$RHEL_MAJOR/
+gpgcheck=1
+enabled=1
+gpgkey=https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc
+EOF
+    # No full "dnf update" here: it can outlast the autohealing grace period on small VMs.
+    # Security updates are applied daily by dnf-automatic instead (configured below).
+    dnf -y remove iptables-services || true
+    dnf -y install --allowerasing pritunl pritunl-openvpn wireguard-tools mongodb-org \
+      policycoreutils-python-utils dnf-automatic
+  else
+    CODENAME="$VERSION_CODENAME"
 
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y gnupg curl ca-certificates
+    # Stop services from auto-starting during install; they are configured first.
+    printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+    chmod +x /usr/sbin/policy-rc.d
 
-  curl -fsSL "https://www.mongodb.org/static/pgp/server-$MONGODB_VERSION.asc" \
-    | gpg -o "/usr/share/keyrings/mongodb-server-$MONGODB_VERSION.gpg" --dearmor --yes
-  curl -fsSL https://swupdate.openvpn.net/repos/repo-public.gpg \
-    | gpg -o /usr/share/keyrings/openvpn-repo.gpg --dearmor --yes
-  curl -fsSL https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc \
-    | gpg -o /usr/share/keyrings/pritunl.gpg --dearmor --yes
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y gnupg curl ca-certificates
 
-  echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-$MONGODB_VERSION.gpg ] https://repo.mongodb.org/apt/ubuntu $CODENAME/mongodb-org/$MONGODB_VERSION multiverse" \
-    > /etc/apt/sources.list.d/mongodb-org.list
-  echo "deb [ signed-by=/usr/share/keyrings/openvpn-repo.gpg ] https://build.openvpn.net/debian/openvpn/stable $CODENAME main" \
-    > /etc/apt/sources.list.d/openvpn.list
-  echo "deb [ signed-by=/usr/share/keyrings/pritunl.gpg ] https://repo.pritunl.com/stable/apt $CODENAME main" \
-    > /etc/apt/sources.list.d/pritunl.list
+    curl -fsSL "https://www.mongodb.org/static/pgp/server-$MONGODB_VERSION.asc" \
+      | gpg -o "/usr/share/keyrings/mongodb-server-$MONGODB_VERSION.gpg" --dearmor --yes
+    curl -fsSL https://swupdate.openvpn.net/repos/repo-public.gpg \
+      | gpg -o /usr/share/keyrings/openvpn-repo.gpg --dearmor --yes
+    curl -fsSL https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc \
+      | gpg -o /usr/share/keyrings/pritunl.gpg --dearmor --yes
 
-  apt-get update -y
-  apt-get install -y pritunl openvpn mongodb-org wireguard wireguard-tools
+    echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-$MONGODB_VERSION.gpg ] https://repo.mongodb.org/apt/ubuntu $CODENAME/mongodb-org/$MONGODB_VERSION multiverse" \
+      > /etc/apt/sources.list.d/mongodb-org.list
+    echo "deb [ signed-by=/usr/share/keyrings/openvpn-repo.gpg ] https://build.openvpn.net/debian/openvpn/stable $CODENAME main" \
+      > /etc/apt/sources.list.d/openvpn.list
+    echo "deb [ signed-by=/usr/share/keyrings/pritunl.gpg ] https://repo.pritunl.com/stable/apt $CODENAME main" \
+      > /etc/apt/sources.list.d/pritunl.list
 
-  rm -f /usr/sbin/policy-rc.d
+    apt-get update -y
+    apt-get install -y pritunl openvpn mongodb-org wireguard wireguard-tools
+
+    rm -f /usr/sbin/policy-rc.d
+  fi
 fi
 
-# GCP enforces firewalling at the VPC; host ufw only gets in Pritunl's way.
-ufw disable || true
+# Firewalling is done by GCP firewall rules; host firewalls interfere with Pritunl's iptables rules.
+if [ "$OS_FAMILY" = rhel ]; then
+  systemctl disable --now firewalld 2>/dev/null || true
 
-# --- 3. Point MongoDB at the data disk (localhost only) ------------------------------
-chown -R mongodb:mongodb "$DATA_MOUNT/mongodb"
-sed -i -E "s|^(\s*dbPath:).*|\1 $DATA_MOUNT/mongodb|" /etc/mongod.conf
-sed -i -E "s|^(\s*bindIp:).*|\1 127.0.0.1|" /etc/mongod.conf
+  # Daily automatic security updates (replaces a slow full update at boot).
+  if [ -f /etc/dnf/automatic.conf ]; then
+    sed -i -E 's/^upgrade_type[[:space:]]*=.*/upgrade_type = security/; s/^apply_updates[[:space:]]*=.*/apply_updates = yes/' /etc/dnf/automatic.conf
+    systemctl enable --now dnf-automatic.timer
+  fi
+else
+  ufw disable || true
+fi
+
+# --- 3. MongoDB data on the data disk (localhost only) -------------------------------
+echo "### $(date -u +%T) step 3: MongoDB data and SELinux"
+MONGO_DBPATH="$(awk '/^[[:space:]]*dbPath:/ {print $2}' /etc/mongod.conf)"
+MONGO_USER="$(systemctl show -p User --value mongod)"
+[ -n "$MONGO_DBPATH" ] && [ -n "$MONGO_USER" ] || { echo "ERROR: cannot read mongod dbPath/user"; exit 1; }
+sed -i -E "s|^([[:space:]]*bindIp:).*|\1 127.0.0.1|" /etc/mongod.conf
+
+bind_mount "$DATA_MOUNT/mongodb" "$MONGO_DBPATH"
+chown -R "$MONGO_USER:$MONGO_USER" "$MONGO_DBPATH"
+
+# SELinux: label the data-disk directories exactly like the standard paths they replace,
+# so a full relabel keeps them correct too.
+if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" != "Disabled" ]; then
+  # List first, then grep: piping into "grep -q" can SIGPIPE semanage and, with
+  # pipefail, look like "not found", making the add fail on an existing rule.
+  LOCAL_FCONTEXTS="$(semanage fcontext -l -C)"
+  add_equivalence() {
+    grep -qF "$1 = " <<<"$LOCAL_FCONTEXTS" || semanage fcontext -a -e "$2" "$1"
+  }
+  add_equivalence "$DATA_MOUNT/mongodb" "$MONGO_DBPATH"
+  add_equivalence "$DATA_MOUNT/pritunl/lib" /var/lib/pritunl
+  restorecon -RF "$MONGO_DBPATH" /var/lib/pritunl
+fi
 
 for svc in mongod pritunl; do
   mkdir -p "/etc/systemd/system/$svc.service.d"
   cat > "/etc/systemd/system/$svc.service.d/10-data-disk.conf" <<EOF
 [Unit]
-RequiresMountsFor=$DATA_MOUNT /var/lib/pritunl
+RequiresMountsFor=$DATA_MOUNT $MONGO_DBPATH /var/lib/pritunl
 EOF
 done
-mkdir -p /etc/systemd/system/pritunl.service.d
 cat > /etc/systemd/system/pritunl.service.d/20-after-mongod.conf <<'EOF'
 [Unit]
 After=mongod.service
@@ -96,34 +167,29 @@ Wants=mongod.service
 EOF
 systemctl daemon-reload
 
-# --- 4. Persist /etc/pritunl.conf on the data disk -----------------------------------
-FIRST_RUN=false
-if [ ! -f "$DATA_MOUNT/pritunl/pritunl.conf" ]; then
-  FIRST_RUN=true
-  if [ -f /etc/pritunl.conf ] && [ ! -L /etc/pritunl.conf ]; then
-    mv /etc/pritunl.conf "$DATA_MOUNT/pritunl/pritunl.conf"
-  else
-    echo '{}' > "$DATA_MOUNT/pritunl/pritunl.conf"
-  fi
-fi
-ln -sfn "$DATA_MOUNT/pritunl/pritunl.conf" /etc/pritunl.conf
-
-# --- 5. Start services ---------------------------------------------------------------
-systemctl enable --now mongod
+# --- 4. Start MongoDB, then Pritunl --------------------------------------------------
+echo "### $(date -u +%T) step 4: start MongoDB and Pritunl"
+systemctl enable mongod
+systemctl restart mongod
+MONGO_OK=false
 for _ in $(seq 1 30); do
-  mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && break
+  if mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1; then
+    MONGO_OK=true; break
+  fi
   sleep 2
 done
-
-if [ "$FIRST_RUN" = true ]; then
-  # Pre-set the local MongoDB URI so the web setup skips the database step.
-  pritunl set-mongodb "mongodb://127.0.0.1:27017/pritunl"
+if [ "$MONGO_OK" != true ]; then
+  echo "ERROR: MongoDB did not start. Last mongod log lines:"
+  journalctl -u mongod --no-pager | tail -20
+  exit 1
 fi
 
+# The URI is always the local MongoDB, so it is (re)set on every boot instead of persisting pritunl.conf.
+pritunl set-mongodb "mongodb://127.0.0.1:27017/pritunl"
 systemctl enable pritunl
 systemctl restart pritunl
 
-# --- 6. Optional: Let's Encrypt certificate for the web server ------------------------
+# --- 5. Optional: Let's Encrypt certificate for the web server ------------------------
 # A timer checks hourly until the domain's A record points at this VM's static IP, then
 # sets the domain in Pritunl and requests the certificate once. Pritunl renews it itself.
 # The certificate lives in MongoDB on the data disk, so a rebuilt VM keeps it.
@@ -189,7 +255,7 @@ else
   systemctl disable --now pritunl-acme.timer 2>/dev/null || true
 fi
 
-# --- 7. Optional: Google Cloud Ops Agent for logs and metrics -------------------------
+# --- 6. Optional: Google Cloud Ops Agent for logs and metrics -------------------------
 if [ "$INSTALL_OPS_AGENT" = "true" ] && ! systemctl is-active --quiet google-cloud-ops-agent; then
   curl -sSfL https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh -o /tmp/add-ops-agent.sh
   bash /tmp/add-ops-agent.sh --also-install || echo "ops agent install failed; continuing"

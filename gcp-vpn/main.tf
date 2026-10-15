@@ -91,5 +91,7 @@ module "pritunl" {
   snapshot_start_time     = var.snapshot_start_time
   snapshot_retention_days = var.snapshot_retention_days
 
+  snapshot_before_vm_replace = var.snapshot_before_vm_replace
+
   depends_on = [google_project_service.required]
 }

@@ -109,7 +109,7 @@ variable "machine_type" {
 variable "source_image" {
   description = "Boot image or image family."
   type        = string
-  default     = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
+  default     = "projects/rocky-linux-cloud/global/images/family/rocky-linux-9"
 }
 
 variable "boot_disk_size_gb" {
@@ -177,9 +177,9 @@ variable "kms_protection_level" {
 # --- Access ---------------------------------------------------------------------------
 
 variable "vpn_udp_ports" {
-  description = "UDP ports of the Pritunl servers, as configured in the Pritunl UI."
+  description = "UDP ports of the Pritunl servers, as configured in the Pritunl UI. Avoid 1194 on SELinux systems (reserved for the system OpenVPN service)."
   type        = list(string)
-  default     = ["1194"]
+  default     = ["15194"]
 }
 
 variable "admin_source_ranges" {
@@ -210,7 +210,7 @@ variable "letsencrypt_domain" {
 variable "autohealing_initial_delay_sec" {
   description = "Grace period before autohealing checks a new VM."
   type        = number
-  default     = 600
+  default     = 900
 }
 
 variable "update_policy_type" {
@@ -223,6 +223,12 @@ variable "snapshot_start_time" {
   description = "Daily snapshot time (UTC, HH:00)."
   type        = string
   default     = "02:00"
+}
+
+variable "snapshot_before_vm_replace" {
+  description = "Snapshot the data disk (via gcloud) before any apply that recreates the VM, and before terraform destroy."
+  type        = bool
+  default     = true
 }
 
 variable "snapshot_retention_days" {

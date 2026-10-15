@@ -2,7 +2,7 @@
 # To deploy in another project: copy this folder to environments/<new-env>/ and edit the values.
 
 # --- Project & location (REPLACE the project ID; confirm region/zone) ------------------
-project_id = "REPLACE-WITH-GCP-PROJECT-ID"
+project_id = "gstore-development"
 region     = "us-central1"
 zone       = "us-central1-a"
 
@@ -48,8 +48,10 @@ reserved_cidrs = [
 peerings = []
 
 # --- Pritunl VM -----------------------------------------------------------------------
-vm_name           = "gstore-non-prod-pritunl"
-machine_type      = "e2-small"
+vm_name      = "gstore-non-prod-pritunl"
+machine_type = "e2-standard-2"
+# Rocky Linux 9: Pritunl's tested OS family. Ubuntu 24.04 currently cannot run MongoDB 8.0 (kernel 6.19+).
+source_image      = "projects/rocky-linux-cloud/global/images/family/rocky-linux-9"
 data_disk_size_gb = 80
 
 # --- Encryption -----------------------------------------------------------------------
@@ -63,18 +65,22 @@ kms_key_rotation_period = "7776000s" # 90 days
 kms_protection_level    = "SOFTWARE"
 
 # --- Access ---------------------------------------------------------------------------
-vpn_udp_ports = ["1194"]
+# Must match the Pritunl server port. Not 1194: SELinux reserves it for the system OpenVPN service.
+vpn_udp_ports = ["15194"]
 
 # REPLACE with office / admin public IPs. 0.0.0.0/0 is rejected.
 admin_source_ranges = [
   "203.0.113.10/32",
+  "104.28.0.0/16",
+  "14.99.194.90/32",
+  "34.27.195.8/32"
 ]
 
 # Let's Encrypt certificate for the Pritunl web console / profile pages.
 # Set to the Namecheap hostname (e.g. "vpn.example.com") to get a trusted certificate:
 # opens TCP 80 (needed for issuance and renewal) and the VM requests the certificate
 # within an hour of the A record pointing at the static IP. null = self-signed.
-letsencrypt_domain = null
+letsencrypt_domain = "gstoredevvpn.kalama.cloud"
 
 # Who can SSH to the VM (IAP + OS Login, with their own Google identity and SSH key).
 # Terraform grants: IAP tunnel access, OS Login (sudo if admin_sudo = true), and
@@ -82,10 +88,19 @@ letsencrypt_domain = null
 # REPLACE with your admin group or users.
 admin_members = [
   # "group:gstore-vpn-admins@company.com",
-  # "user:alice@company.com",
+  "user:animesh.s@greyorange.com",
 ]
 admin_sudo = true
 
 # --- Operations -----------------------------------------------------------------------
+# Grace period before autohealing judges a new VM. First boot measured ~12.5 min on
+# e2-small (package install ~10 min), so 20 min leaves margin for slow mirrors.
+autohealing_initial_delay_sec = 1200
+
 snapshot_start_time     = "02:00"
 snapshot_retention_days = 14
+
+# Take a data-disk snapshot automatically before any apply that recreates the VM
+# (machine type, image, startup script...) and before terraform destroy. Needs gcloud
+# on the machine running Terraform. These snapshots are kept until deleted manually.
+snapshot_before_vm_replace = true

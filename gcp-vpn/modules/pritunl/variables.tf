@@ -42,9 +42,9 @@ variable "machine_type" {
 }
 
 variable "source_image" {
-  description = "Boot image or image family. Ubuntu 24.04 is the Ubuntu release Pritunl documents."
+  description = "Boot image or image family. RHEL-family (Rocky/Alma 9) is Pritunl's tested platform. Ubuntu 24.04 currently fails: its 6.19+ kernel stops MongoDB 8.0 from starting (MongoDB SERVER-121912)."
   type        = string
-  default     = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
+  default     = "projects/rocky-linux-cloud/global/images/family/rocky-linux-9"
 }
 
 variable "boot_disk_size_gb" {
@@ -110,7 +110,7 @@ variable "enable_secure_boot" {
 # --- Software -------------------------------------------------------------------------
 
 variable "mongodb_version" {
-  description = "MongoDB major.minor apt repo to install. Pin it: the data on the stateful disk must match this version."
+  description = "MongoDB major.minor package repo to install. Pin it: the data on the stateful disk must match this version."
   type        = string
   default     = "8.0"
 }
@@ -143,9 +143,9 @@ variable "admin_sudo" {
 # --- Firewall -------------------------------------------------------------------------
 
 variable "vpn_udp_ports" {
-  description = "UDP ports of the Pritunl servers (OpenVPN and/or WireGuard) opened to vpn_source_ranges. Must match the ports set in the Pritunl UI."
+  description = "UDP ports of the Pritunl servers (OpenVPN and/or WireGuard) opened to vpn_source_ranges. Must match the ports set in the Pritunl UI. Avoid 1194 on SELinux systems (Rocky/RHEL): it is reserved for the system OpenVPN service (openvpn_port_t), so Pritunl gets \"Permission denied\" binding it."
   type        = list(string)
-  default     = ["1194"]
+  default     = ["15194"]
 }
 
 variable "vpn_source_ranges" {
@@ -216,7 +216,7 @@ variable "health_check_unhealthy_threshold" {
 variable "autohealing_initial_delay_sec" {
   description = "Grace period after (re)creation before health checks count. Covers a full package install on a fresh boot disk."
   type        = number
-  default     = 600
+  default     = 900
 }
 
 variable "update_policy_type" {
@@ -248,4 +248,10 @@ variable "snapshot_storage_locations" {
   description = "Where snapshots are stored. null = the region."
   type        = list(string)
   default     = null
+}
+
+variable "snapshot_before_vm_replace" {
+  description = "Snapshot the data disk (via gcloud on the machine running Terraform) before any apply that recreates the VM, and before terraform destroy. If the snapshot fails, the apply stops before the VM is touched. Snapshots are kept until deleted manually."
+  type        = bool
+  default     = true
 }

@@ -277,6 +277,43 @@ resource "google_compute_instance_template" "pritunl" {
   }
 }
 
+# --- Safety snapshot before the VM is recreated or destroyed --------------------------
+# Replaced whenever the instance template changes (machine type, image, startup script...).
+# Its destroy-time provisioner snapshots the data disk; the MIG depends on it, so the
+# snapshot completes before the MIG recreates the VM. It also runs on terraform destroy,
+# before the data disk is deleted. A failed snapshot fails the apply before any VM change.
+
+resource "terraform_data" "pre_change_snapshot" {
+  count = var.snapshot_before_vm_replace ? 1 : 0
+
+  triggers_replace = [google_compute_instance_template.pritunl.self_link_unique]
+
+  input = {
+    project  = var.project_id
+    zone     = var.zone
+    location = coalesce(try(var.snapshot_storage_locations[0], null), var.region)
+    disk     = google_compute_disk.data.name
+    prefix   = trimsuffix(substr("${var.name}-pre-change", 0, 46), "-")
+    kms_flag = var.kms_key_self_link == null ? "" : "--kms-key=${var.kms_key_self_link}"
+  }
+
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+      snap="${self.input.prefix}-$(date -u +%Y%m%d-%H%M%S)"
+      echo "Snapshotting ${self.input.disk} as $snap before the VM is replaced/destroyed..."
+      gcloud compute snapshots create "$snap" \
+        --project="${self.input.project}" \
+        --source-disk="${self.input.disk}" \
+        --source-disk-zone="${self.input.zone}" \
+        --storage-location="${self.input.location}" \
+        --labels=app=pritunl,trigger=pre-change ${self.input.kms_flag}
+    EOT
+  }
+}
+
 # --- Health check + stateful MIG of size 1 --------------------------------------------
 
 resource "google_compute_health_check" "pritunl" {
@@ -335,7 +372,10 @@ resource "google_compute_instance_group_manager" "pritunl" {
     ignore_changes = [target_size]
   }
 
-  depends_on = [google_compute_firewall.health_check]
+  depends_on = [
+    google_compute_firewall.health_check,
+    terraform_data.pre_change_snapshot, # snapshot first, then roll the VM
+  ]
 }
 
 resource "google_compute_per_instance_config" "pritunl" {

@@ -1,0 +1,78 @@
+digraph G {
+  rankdir = "RL";
+  node [shape = rect, fontname = "sans-serif"];
+  "data.google_project.this" [label="data.google_project.this"];
+  "google_project_service.required" [label="google_project_service.required"];
+  subgraph "cluster_module.kms" {
+    label = "module.kms"
+    fontname = "sans-serif"
+    "module.kms.google_kms_crypto_key.this" [label="google_kms_crypto_key.this"];
+    "module.kms.google_kms_crypto_key_iam_member.encrypter_decrypter" [label="google_kms_crypto_key_iam_member.encrypter_decrypter"];
+    "module.kms.google_kms_key_ring.this" [label="google_kms_key_ring.this"];
+  }
+  subgraph "cluster_module.network" {
+    label = "module.network"
+    fontname = "sans-serif"
+    "module.network.google_compute_network.this" [label="google_compute_network.this"];
+    "module.network.google_compute_network_peering.local" [label="google_compute_network_peering.local"];
+    "module.network.google_compute_network_peering.remote" [label="google_compute_network_peering.remote"];
+    "module.network.google_compute_subnetwork.this" [label="google_compute_subnetwork.this"];
+  }
+  subgraph "cluster_module.pritunl" {
+    label = "module.pritunl"
+    fontname = "sans-serif"
+    "module.pritunl.google_compute_address.external" [label="google_compute_address.external"];
+    "module.pritunl.google_compute_address.internal" [label="google_compute_address.internal"];
+    "module.pritunl.google_compute_disk.data" [label="google_compute_disk.data"];
+    "module.pritunl.google_compute_disk_resource_policy_attachment.data_snapshots" [label="google_compute_disk_resource_policy_attachment.data_snapshots"];
+    "module.pritunl.google_compute_firewall.admin" [label="google_compute_firewall.admin"];
+    "module.pritunl.google_compute_firewall.health_check" [label="google_compute_firewall.health_check"];
+    "module.pritunl.google_compute_firewall.iap_ssh" [label="google_compute_firewall.iap_ssh"];
+    "module.pritunl.google_compute_firewall.letsencrypt" [label="google_compute_firewall.letsencrypt"];
+    "module.pritunl.google_compute_firewall.vpn" [label="google_compute_firewall.vpn"];
+    "module.pritunl.google_compute_health_check.pritunl" [label="google_compute_health_check.pritunl"];
+    "module.pritunl.google_compute_instance_group_manager.pritunl" [label="google_compute_instance_group_manager.pritunl"];
+    "module.pritunl.google_compute_instance_template.pritunl" [label="google_compute_instance_template.pritunl"];
+    "module.pritunl.google_compute_per_instance_config.pritunl" [label="google_compute_per_instance_config.pritunl"];
+    "module.pritunl.google_compute_resource_policy.snapshots" [label="google_compute_resource_policy.snapshots"];
+    "module.pritunl.google_project_iam_member.admin" [label="google_project_iam_member.admin"];
+    "module.pritunl.google_project_iam_member.pritunl" [label="google_project_iam_member.pritunl"];
+    "module.pritunl.google_service_account.pritunl" [label="google_service_account.pritunl"];
+    "module.pritunl.google_service_account_iam_member.admin_sa_user" [label="google_service_account_iam_member.admin_sa_user"];
+  }
+  "module.kms.google_kms_crypto_key.this" -> "module.kms.google_kms_key_ring.this";
+  "module.kms.google_kms_crypto_key_iam_member.encrypter_decrypter" -> "data.google_project.this";
+  "module.kms.google_kms_crypto_key_iam_member.encrypter_decrypter" -> "module.kms.google_kms_crypto_key.this";
+  "module.kms.google_kms_key_ring.this" -> "google_project_service.required";
+  "module.network.google_compute_network.this" -> "google_project_service.required";
+  "module.network.google_compute_network_peering.local" -> "module.network.google_compute_subnetwork.this";
+  "module.network.google_compute_network_peering.remote" -> "module.network.google_compute_network_peering.local";
+  "module.network.google_compute_subnetwork.this" -> "module.network.google_compute_network.this";
+  "module.pritunl.google_compute_address.external" -> "google_project_service.required";
+  "module.pritunl.google_compute_address.internal" -> "module.network.google_compute_subnetwork.this";
+  "module.pritunl.google_compute_disk.data" -> "module.kms.google_kms_crypto_key_iam_member.encrypter_decrypter";
+  "module.pritunl.google_compute_disk_resource_policy_attachment.data_snapshots" -> "module.pritunl.google_compute_disk.data";
+  "module.pritunl.google_compute_disk_resource_policy_attachment.data_snapshots" -> "module.pritunl.google_compute_resource_policy.snapshots";
+  "module.pritunl.google_compute_firewall.admin" -> "module.network.google_compute_network.this";
+  "module.pritunl.google_compute_firewall.health_check" -> "module.network.google_compute_network.this";
+  "module.pritunl.google_compute_firewall.iap_ssh" -> "module.network.google_compute_network.this";
+  "module.pritunl.google_compute_firewall.letsencrypt" -> "module.network.google_compute_network.this";
+  "module.pritunl.google_compute_firewall.vpn" -> "module.network.google_compute_network.this";
+  "module.pritunl.google_compute_health_check.pritunl" -> "google_project_service.required";
+  "module.pritunl.google_compute_instance_group_manager.pritunl" -> "module.pritunl.google_compute_firewall.health_check";
+  "module.pritunl.google_compute_instance_group_manager.pritunl" -> "module.pritunl.google_compute_health_check.pritunl";
+  "module.pritunl.google_compute_instance_group_manager.pritunl" -> "module.pritunl.google_compute_instance_template.pritunl";
+  "module.pritunl.google_compute_instance_template.pritunl" -> "module.kms.google_kms_crypto_key_iam_member.encrypter_decrypter";
+  "module.pritunl.google_compute_instance_template.pritunl" -> "module.network.google_compute_subnetwork.this";
+  "module.pritunl.google_compute_instance_template.pritunl" -> "module.pritunl.google_service_account.pritunl";
+  "module.pritunl.google_compute_per_instance_config.pritunl" -> "module.pritunl.google_compute_address.external";
+  "module.pritunl.google_compute_per_instance_config.pritunl" -> "module.pritunl.google_compute_address.internal";
+  "module.pritunl.google_compute_per_instance_config.pritunl" -> "module.pritunl.google_compute_disk_resource_policy_attachment.data_snapshots";
+  "module.pritunl.google_compute_per_instance_config.pritunl" -> "module.pritunl.google_compute_instance_group_manager.pritunl";
+  "module.pritunl.google_compute_per_instance_config.pritunl" -> "module.pritunl.google_project_iam_member.pritunl";
+  "module.pritunl.google_compute_resource_policy.snapshots" -> "google_project_service.required";
+  "module.pritunl.google_project_iam_member.admin" -> "google_project_service.required";
+  "module.pritunl.google_project_iam_member.pritunl" -> "module.pritunl.google_service_account.pritunl";
+  "module.pritunl.google_service_account.pritunl" -> "google_project_service.required";
+  "module.pritunl.google_service_account_iam_member.admin_sa_user" -> "module.pritunl.google_service_account.pritunl";
+}

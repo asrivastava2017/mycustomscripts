@@ -5,7 +5,7 @@ Deploys Pritunl (Community edition) on a single VM in a new VPC, with no load ba
 - A new **VPC + subnet**. `plan` fails if the subnet or VPN client range overlaps any range in `reserved_cidrs`.
 - A **reserved static external IP** directly on the VM, plus a reserved internal IP.
 - A **stateful managed instance group of size 1**, with autohealing on a TCP 443 health check. A failed VM is recreated with the **same name, same IPs and same data disk**.
-- A **stateful data disk** holding MongoDB, `/etc/pritunl.conf` and `/var/lib/pritunl` (the Pritunl host ID). It has **daily snapshots**.
+- A **stateful data disk** holding MongoDB's data and `/var/lib/pritunl` (the Pritunl host ID). Both are bind-mounted onto their standard paths. It has **daily snapshots**.
 - Firewall rules: the VPN UDP port is open to the internet; the console (TCP 443) is open only to admin IPs; SSH is IAP-only; the health-check ranges are allowed.
 - A least-privilege VM service account (logs and metrics only), Shielded VM, OS Login, and optional Ops Agent.
 - Optional **customer-managed encryption (CMEK)**. With `create_kms_key = true`, a Cloud KMS key ring and key are created and used for the boot disk, the data disk and its snapshots. With `false`, disks use Google-managed encryption.
@@ -83,10 +83,10 @@ First boot installs MongoDB, OpenVPN, WireGuard and Pritunl, which takes about 5
 2. **Console:** run the `initial_setup_commands` outputs to get the default password. Open `admin_url` from an admin IP and change the password.
 3. **Settings → Public Address:** set it to the Namecheap hostname, so client profiles use the name, not the IP.
 4. **Add a server:**
-   - Port and protocol: UDP `1194`. This must match `vpn_udp_ports`.
+   - Port and protocol: UDP `15194`. This must match `vpn_udp_ports`. **Don't use 1194**: on Rocky/RHEL, SELinux reserves it for the system OpenVPN service, and the server fails with `Socket bind failed ... Permission denied`.
    - Virtual Network: `vpn_client_cidr` (`10.201.0.0/24`).
    - Enable TOTP two-step authentication.
-   - Remove the `0.0.0.0/0` route and add only the CIDRs users need, such as the peered VPC ranges, Atlas and Redis Cloud. Keep **NAT** ticked on each route.
+   - Remove the `0.0.0.0/0` route and add only the CIDRs users need, such as the peered VPC ranges, Atlas and Redis Cloud. The free edition applies **NAT** to every route automatically; the per-route NAT checkbox is an Enterprise feature, so it doesn't appear. Leave "Cloud Route Advertisement Resource" and "Metric" empty. Check NAT with `sudo iptables -t nat -S POSTROUTING | grep MASQUERADE`.
 5. **Allow-lists:** VPN traffic leaves the VM from the `internal_ip` output (because NAT is on). Allow that IP, or `subnet_cidr`, in:
    - peer-VPC firewall rules
    - the MongoDB Atlas IP access list
@@ -107,6 +107,25 @@ make apply ENV=<new-env>
 ```
 
 No module or root `.tf` file needs to change.
+
+## Automatic snapshot before VM changes
+
+With `snapshot_before_vm_replace = true` (the default), Terraform snapshots the data disk:
+- before any apply that **recreates the VM**, i.e. anything that changes the instance template: machine type, image, startup script, boot disk, tags or service account;
+- before `terraform destroy` deletes the data disk.
+
+How it works:
+- **Order:** a `terraform_data` resource tracks the instance template. When the template changes, its destroy-time step runs `gcloud compute snapshots create`. The instance group depends on it, so the snapshot completes **before** the VM is recreated.
+- **Failure:** if the snapshot fails, the apply stops before the VM is touched.
+- **What the plan shows:** `module.pritunl.terraform_data.pre_change_snapshot[0] must be replaced`, next to the instance template replacement.
+- **Snapshot names:** `<vm_name>-pre-change-<UTC timestamp>`, labelled `trigger=pre-change`.
+- **Retention:** these are **kept until deleted** (unlike the 14-day daily ones). Clean up old ones with:
+  ```bash
+  gcloud compute snapshots list --filter="labels.trigger=pre-change" --sort-by=~creationTimestamp
+  gcloud compute snapshots delete <name>
+  ```
+- **Requirement:** `gcloud`, logged in, on the machine running Terraform.
+- **Not covered:** changes that don't recreate the VM (firewall ports, admins, disk size) take no snapshot, and neither do autohealing recreates. The daily schedule covers those.
 
 ## Operations
 
@@ -149,4 +168,4 @@ This is only the web server's certificate. VPN tunnels are encrypted with Pritun
 - **Zonal:** the VM and data disk live in one zone. A full zone outage needs a manual restore from a snapshot into another zone.
 - **`terraform destroy` deletes the data disk.** Snapshots are kept (`KEEP_AUTO_SNAPSHOTS`) until retention expires.
 - **MongoDB version:** `mongodb_version` is pinned because the data on the disk must match it. Upgrade one major version at a time.
-- **OS support:** the startup script targets Ubuntu 24.04, the Ubuntu release Pritunl documents. Pritunl's own testing focuses on RHEL-family distributions.
+- **OS support:** the default image is **Rocky Linux 9**. Pritunl tests on RHEL-family systems and ships SELinux policies for them. The script also supports Ubuntu, but **Ubuntu 24.04 currently fails**: its 6.19+ kernel stops MongoDB 8.0 from starting ([SERVER-121912](https://jira.mongodb.org/browse/SERVER-121912)).
