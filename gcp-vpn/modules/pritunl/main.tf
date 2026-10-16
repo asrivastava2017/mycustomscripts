@@ -227,6 +227,10 @@ resource "google_compute_instance_template" "pritunl" {
     disk_size_gb = var.boot_disk_size_gb
     disk_type    = var.boot_disk_type
 
+    # Same daily schedule and retention as the data disk, so the whole VM is covered.
+    # Snapshots outlive a recreated boot disk (KEEP_AUTO_SNAPSHOTS) until retention ends.
+    resource_policies = var.snapshot_boot_disk ? [google_compute_resource_policy.snapshots.name] : []
+
     dynamic "disk_encryption_key" {
       for_each = var.kms_key_self_link == null ? [] : [var.kms_key_self_link]
       content {
@@ -292,24 +296,50 @@ resource "terraform_data" "pre_change_snapshot" {
     project  = var.project_id
     zone     = var.zone
     location = coalesce(try(var.snapshot_storage_locations[0], null), var.region)
+    vm       = var.name
     disk     = google_compute_disk.data.name
-    prefix   = trimsuffix(substr("${var.name}-pre-change", 0, 46), "-")
+    prefix   = trimsuffix(substr("${var.name}-pre-change", 0, 41), "-")
     kms_flag = var.kms_key_self_link == null ? "" : "--kms-key=${var.kms_key_self_link}"
   }
 
+  # self.input may come from an older version of this resource (state saved before a
+  # field existed), so new fields are read with try() and a fallback.
+  # Snapshots the boot disk (if the VM exists) and the data disk. Names:
+  # <prefix>-boot-<UTC time> and <prefix>-data-<UTC time>. Any failure stops the apply.
   provisioner "local-exec" {
     when        = destroy
     interpreter = ["/bin/bash", "-c"]
     command     = <<-EOT
       set -euo pipefail
-      snap="${self.input.prefix}-$(date -u +%Y%m%d-%H%M%S)"
-      echo "Snapshotting ${self.input.disk} as $snap before the VM is replaced/destroyed..."
-      gcloud compute snapshots create "$snap" \
-        --project="${self.input.project}" \
-        --source-disk="${self.input.disk}" \
-        --source-disk-zone="${self.input.zone}" \
-        --storage-location="${self.input.location}" \
-        --labels=app=pritunl,trigger=pre-change ${self.input.kms_flag}
+      TS="$(date -u +%Y%m%d-%H%M%S)"
+
+      take_snapshot() {
+        local disk="$1" kind="$2"
+        local snap="${self.input.prefix}-$kind-$TS"
+        echo "Snapshotting $kind disk $disk as $snap before the VM is replaced/destroyed..."
+        gcloud compute snapshots create "$snap" \
+          --project="${self.input.project}" \
+          --source-disk="$disk" \
+          --source-disk-zone="${self.input.zone}" \
+          --storage-location="${self.input.location}" \
+          --labels="app=pritunl,trigger=pre-change,disk=$kind" ${self.input.kms_flag}
+      }
+
+      # Boot disk: only while the VM exists (on terraform destroy it is already gone).
+      if BOOT_INFO="$(gcloud compute instances describe "${try(self.input.vm, trimsuffix(self.input.prefix, "-pre-change"))}" \
+            --project="${self.input.project}" --zone="${self.input.zone}" \
+            --format='value(disks[0].boot,disks[0].source.basename())' 2>/dev/null)"; then
+        IFS=$'\t' read -r IS_BOOT BOOT_DISK <<<"$BOOT_INFO"
+        if [ "$IS_BOOT" = "True" ] && [ -n "$BOOT_DISK" ]; then
+          take_snapshot "$BOOT_DISK" boot
+        else
+          echo "ERROR: could not identify the boot disk of ${try(self.input.vm, trimsuffix(self.input.prefix, "-pre-change"))} (got: $BOOT_INFO)"; exit 1
+        fi
+      else
+        echo "VM ${try(self.input.vm, trimsuffix(self.input.prefix, "-pre-change"))} not found (already deleted); skipping boot disk snapshot."
+      fi
+
+      take_snapshot "${self.input.disk}" data
     EOT
   }
 }

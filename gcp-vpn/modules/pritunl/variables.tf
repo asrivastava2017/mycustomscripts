@@ -250,6 +250,12 @@ variable "snapshot_storage_locations" {
   default     = null
 }
 
+variable "snapshot_boot_disk" {
+  description = "Also snapshot the boot disk on the same daily schedule and retention as the data disk (whole-VM coverage)."
+  type        = bool
+  default     = true
+}
+
 variable "snapshot_before_vm_replace" {
   description = "Snapshot the data disk (via gcloud on the machine running Terraform) before any apply that recreates the VM, and before terraform destroy. If the snapshot fails, the apply stops before the VM is touched. Snapshots are kept until deleted manually."
   type        = bool

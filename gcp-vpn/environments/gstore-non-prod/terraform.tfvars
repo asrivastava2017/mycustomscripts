@@ -73,7 +73,8 @@ admin_source_ranges = [
   "203.0.113.10/32",
   "104.28.0.0/16",
   "14.99.194.90/32",
-  "34.27.195.8/32"
+  "34.27.195.8/32",
+  "45.251.50.201/32"
 ]
 
 # Let's Encrypt certificate for the Pritunl web console / profile pages.
@@ -99,6 +100,10 @@ autohealing_initial_delay_sec = 1200
 
 snapshot_start_time     = "02:00"
 snapshot_retention_days = 14
+
+# Daily snapshots of the boot disk too (same schedule and retention), so the whole VM
+# (OS + data) is captured. Changing this recreates the VM (instance template change).
+snapshot_boot_disk = true
 
 # Take a data-disk snapshot automatically before any apply that recreates the VM
 # (machine type, image, startup script...) and before terraform destroy. Needs gcloud

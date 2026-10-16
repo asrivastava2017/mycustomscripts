@@ -225,6 +225,12 @@ variable "snapshot_start_time" {
   default     = "02:00"
 }
 
+variable "snapshot_boot_disk" {
+  description = "Also snapshot the boot disk daily, with the same schedule and retention as the data disk."
+  type        = bool
+  default     = true
+}
+
 variable "snapshot_before_vm_replace" {
   description = "Snapshot the data disk (via gcloud) before any apply that recreates the VM, and before terraform destroy."
   type        = bool

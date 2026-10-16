@@ -10,3 +10,15 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+# --- VPN user data: never commit (all environments) ---------------------------
+# Profiles (.tar = user private keys) and per-user details (.details.csv, may hold PINs)
+scripts/users/*/profiles/
+scripts/users/non-prod/profiles/
+scripts/users/production/profiles/
+profiles/
+*.tar
+*.details.csv
+# Plaintext user lists: only enc_user_details.enc is committed
+scripts/users/*/users.csv
+*.enc.tmp
+__pycache__/

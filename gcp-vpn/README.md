@@ -5,7 +5,7 @@ Deploys Pritunl (Community edition) on a single VM in a new VPC, with no load ba
 - A new **VPC + subnet**. `plan` fails if the subnet or VPN client range overlaps any range in `reserved_cidrs`.
 - A **reserved static external IP** directly on the VM, plus a reserved internal IP.
 - A **stateful managed instance group of size 1**, with autohealing on a TCP 443 health check. A failed VM is recreated with the **same name, same IPs and same data disk**.
-- A **stateful data disk** holding MongoDB's data and `/var/lib/pritunl` (the Pritunl host ID). Both are bind-mounted onto their standard paths. It has **daily snapshots**.
+- A **stateful data disk** holding MongoDB's data and `/var/lib/pritunl` (the Pritunl host ID). Both are bind-mounted onto their standard paths. It has **daily snapshots**. With `snapshot_boot_disk = true` (the default), the boot disk gets the same daily snapshots and retention, so the whole VM is captured.
 - Firewall rules: the VPN UDP port is open to the internet; the console (TCP 443) is open only to admin IPs; SSH is IAP-only; the health-check ranges are allowed.
 - A least-privilege VM service account (logs and metrics only), Shielded VM, OS Login, and optional Ops Agent.
 - Optional **customer-managed encryption (CMEK)**. With `create_kms_key = true`, a Cloud KMS key ring and key are created and used for the boot disk, the data disk and its snapshots. With `false`, disks use Google-managed encryption.
@@ -110,15 +110,16 @@ No module or root `.tf` file needs to change.
 
 ## Automatic snapshot before VM changes
 
-With `snapshot_before_vm_replace = true` (the default), Terraform snapshots the data disk:
+With `snapshot_before_vm_replace = true` (the default), Terraform takes snapshots automatically:
 - before any apply that **recreates the VM**, i.e. anything that changes the instance template: machine type, image, startup script, boot disk, tags or service account;
-- before `terraform destroy` deletes the data disk.
+  Both the **boot disk and the data disk** are snapshotted.
+- before `terraform destroy` deletes the data disk. Only the data disk is snapshotted, because by then the VM and its boot disk are already deleted.
 
 How it works:
-- **Order:** a `terraform_data` resource tracks the instance template. When the template changes, its destroy-time step runs `gcloud compute snapshots create`. The instance group depends on it, so the snapshot completes **before** the VM is recreated.
+- **Order:** a `terraform_data` resource tracks the instance template. When the template changes, its destroy-time step looks up the VM's boot disk (`gcloud compute instances describe`) and runs `gcloud compute snapshots create` for the boot disk, then the data disk. The instance group depends on it, so both snapshots complete **before** the VM is recreated.
 - **Failure:** if the snapshot fails, the apply stops before the VM is touched.
 - **What the plan shows:** `module.pritunl.terraform_data.pre_change_snapshot[0] must be replaced`, next to the instance template replacement.
-- **Snapshot names:** `<vm_name>-pre-change-<UTC timestamp>`, labelled `trigger=pre-change`.
+- **Snapshot names:** `<vm_name>-pre-change-boot-<UTC timestamp>` and `<vm_name>-pre-change-data-<UTC timestamp>`, labelled `trigger=pre-change` plus `disk=boot` or `disk=data`.
 - **Retention:** these are **kept until deleted** (unlike the 14-day daily ones). Clean up old ones with:
   ```bash
   gcloud compute snapshots list --filter="labels.trigger=pre-change" --sort-by=~creationTimestamp
@@ -126,6 +127,52 @@ How it works:
   ```
 - **Requirement:** `gcloud`, logged in, on the machine running Terraform.
 - **Not covered:** changes that don't recreate the VM (firewall ports, admins, disk size) take no snapshot, and neither do autohealing recreates. The daily schedule covers those.
+
+## Automating VPN users
+
+The free edition has no API. [`scripts/pritunl_users.py`](scripts/pritunl_users.py) logs in to the console as an admin and calls the same endpoints the web console uses. It needs only Python 3 and `openssl`.
+
+Each VPN environment has its own folder:
+
+```
+scripts/users/<env>/            # <env> = non-prod, production, ...
+├── enc_user_details.enc        # encrypted user list (committed)
+├── pritunl.conf                # URL, admin username, organization; no secrets (committed)
+├── users.csv                   # plaintext, only while editing (git-ignored, deleted automatically)
+└── profiles/                   # downloaded .tar profiles (git-ignored: they contain private keys)
+```
+
+The encryption matches `openssl enc -aes-256-cbc -salt -pbkdf2`, so files work with the manual `openssl` commands in both directions. `openssl` prompts for the passphrase, or set `USERS_ENC_PASSPHRASE`.
+
+```bash
+export PRITUNL_PASSWORD='<console admin password>'   # or PRITUNL_PASSWORD_SECRET in pritunl.conf
+
+# One time: bring users created in the console into the file, so it lists everyone
+python3 scripts/pritunl_users.py pull    --env non-prod      # writes users.csv; review, then:
+python3 scripts/pritunl_users.py encrypt --env non-prod
+
+# Add users: decrypt, edit, create (re-encrypts and deletes users.csv afterwards)
+python3 scripts/pritunl_users.py decrypt --env non-prod
+vi scripts/users/non-prod/users.csv
+python3 scripts/pritunl_users.py create  --env non-prod      # profiles -> scripts/users/non-prod/profiles/
+
+# Re-run from the encrypted list only (decrypted in memory, no plaintext on disk)
+python3 scripts/pritunl_users.py create  --env non-prod
+
+python3 scripts/pritunl_users.py list    --env non-prod
+python3 scripts/pritunl_users.py disable --env non-prod --user bob      # reversible: enable
+python3 scripts/pritunl_users.py delete  --env non-prod --user bob      # asks for confirmation
+python3 scripts/pritunl_users.py profiles --env production --user alice
+python3 scripts/pritunl_users.py encrypt --env non-prod                 # encrypt + delete users.csv manually
+```
+
+- **CSV:** `name,email,pin`; email and pin are optional. See [`scripts/users.example.csv`](scripts/users.example.csv).
+- **One file for everyone:** `enc_user_details.enc` is the list of all VPN users for that environment. Add users through it rather than in the console. If someone is added in the console anyway, `pull` brings them into the file. `pull` only adds missing names; it doesn't change existing rows.
+- **Duplicates:** `create` skips existing users. Names are compared case-insensitively, including repeats within the CSV. Existing users are left unchanged.
+- **Settings:** `pritunl.conf` takes precedence over environment variables, so `--env production` always talks to the production VPN. Flags (`--url`, `--username`, `--org`, `--password-secret`) take precedence over both.
+- **Profiles:** for each newly created user, `create` saves `<name>.tar` (the VPN profile) and `<name>.details.csv` (that user's `name,email,pin` only) in `profiles/`. Both are sensitive: the `.tar` has a private key and the CSV may have a PIN. The `.tar` files contain private keys. They're readable by your account only and never committed. Share them securely.
+- **Where to run it:** from an allow-listed admin IP, or over the VPN. Add `--otp` for admin 2FA, and `--insecure` for a self-signed certificate.
+- **Not an official API:** after a Pritunl upgrade, run `list` first. Pritunl Enterprise offers a supported API and SSO.
 
 ## Operations
 
