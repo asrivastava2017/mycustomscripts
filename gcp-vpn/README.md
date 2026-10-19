@@ -128,6 +128,36 @@ How it works:
 - **Requirement:** `gcloud`, logged in, on the machine running Terraform.
 - **Not covered:** changes that don't recreate the VM (firewall ports, admins, disk size) take no snapshot, and neither do autohealing recreates. The daily schedule covers those.
 
+## Restore server (from snapshots)
+
+If Pritunl breaks (a bad upgrade, corrupted data, a broken configuration), launch a **separate Pritunl server** from a pair of boot and data disk snapshots. It comes up exactly as it was when the snapshots were taken: same OS and Pritunl version, users, servers, routes and certificates. It gets a **new static public IP**, in the same VPC and subnet. **The running server isn't modified.** The restore server only adds resources: a VM, two disks and two IPs. It reuses the existing firewall rules through the `pritunl` network tag.
+
+1. **Pick a snapshot pair** taken at the same time (a pre-change pair, or the boot and data snapshots from the same daily run):
+   ```bash
+   gcloud compute snapshots list --filter="labels.app=pritunl" \
+     --sort-by=~creationTimestamp --format="table(name,sourceDisk.basename(),creationTimestamp)"
+   ```
+2. **Set it** in `terraform.tfvars`:
+   ```hcl
+   restore = {
+     boot_snapshot = "gstore-non-prod-pritunl-pre-change-boot-20261019-101500"
+     data_snapshot = "gstore-non-prod-pritunl-pre-change-data-20261019-101500"
+   }
+   ```
+3. **Plan, then apply.** The plan must show **only `module.pritunl_restore[0]` resources being created: 0 to change, 0 to destroy.** Then run `terraform output restore_server` for the new IP, console URL and SSH command. The server is usually up within a few minutes, because the software is already installed on the restored boot disk.
+4. **Check it:** open its console (`https://<new IP>`, from an admin IP) and confirm users and servers are there.
+
+**Switching users over:**
+- **If Pritunl's Public Address is the DNS name** (`gstorevpn.kalama.cloud`), point the Namecheap A record at the restore server's IP. Existing user profiles keep working without re-downloading, because it's the same Pritunl configuration and certificates. Let's Encrypt renewals also work once DNS points there.
+- **If the Public Address is the old IP,** change it in the restore server's console (Settings and Hosts). Official Pritunl clients pick up the change on their next sync; others need new profiles.
+- **Allow-lists:** VPN traffic from the restore server leaves from its **own internal IP** (`terraform output restore_server`). Add it to Atlas, Redis Cloud and peer-VPC allow-lists.
+
+**Things to know:**
+- **Separate data:** the two servers have **independent copies** of the data. Changes made on one (for example new users) don't appear on the other.
+- **No automatic protection:** the restore server is a plain VM. It has **no autohealing** and **no daily snapshot schedule**. It's for recovery and verification, not a long-term second server.
+- **Removing it:** set `restore = null` and apply. That **deletes** the restore VM, its disks and its IP. Point DNS back to the main server first if users were moved.
+- **Startup script:** the restore VM uses the same startup script as the main server. On the restored disks it doesn't reinstall anything; it only mounts the data and restarts MongoDB and Pritunl.
+
 ## Automating VPN users
 
 The free edition has no API. [`scripts/pritunl_users.py`](scripts/pritunl_users.py) logs in to the console as an admin and calls the same endpoints the web console uses. It needs only Python 3 and `openssl`.

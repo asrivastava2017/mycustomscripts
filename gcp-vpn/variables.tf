@@ -242,3 +242,21 @@ variable "snapshot_retention_days" {
   type        = number
   default     = 14
 }
+
+# --- Restore server -------------------------------------------------------------------
+
+variable "restore" {
+  description = <<-EOT
+    Launch a separate Pritunl restore server from snapshots (null = none). Creates a new VM,
+    new disks from the snapshots and a new static IP in the same subnet; the running server
+    is not modified. Set back to null to remove the restore server and its disks/IP.
+  EOT
+  type = object({
+    boot_snapshot = string           # snapshot of the boot disk (name or projects/<p>/global/snapshots/<name>)
+    data_snapshot = string           # snapshot of the data disk
+    name          = optional(string) # default "<vm_name>-restore"
+    machine_type  = optional(string) # default: same as machine_type
+    zone          = optional(string) # default: same as zone
+  })
+  default = null
+}

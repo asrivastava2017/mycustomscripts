@@ -9,6 +9,15 @@ locals {
   )
 
   labels = merge(var.labels, { app = "pritunl" })
+
+  # Also exported, so a restore server (modules/pritunl-restore) runs the identical script.
+  startup_script = templatefile("${path.module}/templates/startup.sh.tftpl", {
+    data_device_name   = local.data_device_name
+    data_mount_path    = local.data_mount_path
+    mongodb_version    = var.mongodb_version
+    install_ops_agent  = var.install_ops_agent
+    letsencrypt_domain = var.letsencrypt_domain == null ? "" : var.letsencrypt_domain
+  })
 }
 
 # --- Identity -------------------------------------------------------------------------
@@ -267,13 +276,7 @@ resource "google_compute_instance_template" "pritunl" {
   metadata = {
     enable-oslogin         = "TRUE"
     block-project-ssh-keys = "TRUE"
-    startup-script = templatefile("${path.module}/templates/startup.sh.tftpl", {
-      data_device_name   = local.data_device_name
-      data_mount_path    = local.data_mount_path
-      mongodb_version    = var.mongodb_version
-      install_ops_agent  = var.install_ops_agent
-      letsencrypt_domain = var.letsencrypt_domain == null ? "" : var.letsencrypt_domain
-    })
+    startup-script         = local.startup_script
   }
 
   lifecycle {

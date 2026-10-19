@@ -96,3 +96,26 @@ module "pritunl" {
 
   depends_on = [google_project_service.required]
 }
+
+# Restore server: a separate Pritunl VM built from boot + data disk snapshots, with its own
+# new static IP, in the same subnet. Only adds resources; the running server is untouched.
+module "pritunl_restore" {
+  source = "./modules/pritunl-restore"
+  count  = var.restore == null ? 0 : 1
+
+  project_id    = var.project_id
+  region        = var.region
+  zone          = coalesce(try(var.restore.zone, null), var.zone)
+  name          = coalesce(try(var.restore.name, null), "${var.vm_name}-restore")
+  boot_snapshot = try(var.restore.boot_snapshot, null)
+  data_snapshot = try(var.restore.data_snapshot, null)
+  machine_type  = coalesce(try(var.restore.machine_type, null), var.machine_type)
+
+  subnetwork_self_link  = module.network.subnet_self_link
+  network_tag           = module.pritunl.network_tag
+  service_account_email = module.pritunl.service_account_email
+  startup_script        = module.pritunl.startup_script
+  data_device_name      = module.pritunl.data_device_name
+  kms_key_self_link     = var.create_kms_key ? module.kms[0].crypto_key_id : null
+  labels                = var.labels
+}

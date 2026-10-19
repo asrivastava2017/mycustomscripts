@@ -109,3 +109,16 @@ snapshot_boot_disk = true
 # (machine type, image, startup script...) and before terraform destroy. Needs gcloud
 # on the machine running Terraform. These snapshots are kept until deleted manually.
 snapshot_before_vm_replace = true
+
+# --- Restore server -------------------------------------------------------------------
+# Launch a separate Pritunl server from snapshots, with a NEW static IP, without touching
+# the running server. Find the latest pair (taken at the same time):
+#   gcloud compute snapshots list --filter="labels.app=pritunl" \
+#     --sort-by=~creationTimestamp --format="table(name,sourceDisk.basename(),creationTimestamp)"
+# Example:
+# restore = {
+#   boot_snapshot = "gstore-non-prod-pritunl-pre-change-boot-20261019-101500"
+#   data_snapshot = "gstore-non-prod-pritunl-pre-change-data-20261019-101500"
+# }
+# Set back to null (and apply) to delete the restore server, its disks and its IP.
+restore = null

@@ -45,3 +45,18 @@ output "initial_setup_commands" {
     "gcloud compute ssh ${var.name} --project ${var.project_id} --zone ${var.zone} --tunnel-through-iap --command 'sudo pritunl default-password'",
   ]
 }
+
+output "startup_script" {
+  description = "Rendered startup script, reused by modules/pritunl-restore."
+  value       = local.startup_script
+}
+
+output "network_tag" {
+  description = "Network tag the firewall rules target."
+  value       = var.network_tag
+}
+
+output "data_device_name" {
+  description = "Device name the startup script expects for the data disk."
+  value       = local.data_device_name
+}

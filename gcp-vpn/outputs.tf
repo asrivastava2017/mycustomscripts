@@ -52,3 +52,14 @@ output "peerings" {
   description = "Peering states."
   value       = module.network.peerings
 }
+
+output "restore_server" {
+  description = "Restore server details (null when var.restore is not set)."
+  value = var.restore == null ? null : {
+    vm_name     = module.pritunl_restore[0].vm_name
+    external_ip = module.pritunl_restore[0].external_ip
+    internal_ip = module.pritunl_restore[0].internal_ip
+    admin_url   = module.pritunl_restore[0].admin_url
+    ssh_command = module.pritunl_restore[0].ssh_command
+  }
+}
