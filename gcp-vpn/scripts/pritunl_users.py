@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Automate Pritunl (free edition) user management, per environment.
+"""Automate Pritunl (free edition) user management for the VPN.
 
 The free edition has no API, so this script drives the same endpoints the web console
 uses: it logs in as an administrator (session cookie + CSRF token) and then creates,
@@ -7,11 +7,12 @@ lists, disables, enables or deletes users and downloads their VPN profiles.
 These endpoints are not an official API and may change between Pritunl versions,
 so run `list` after any Pritunl upgrade to confirm the script still works.
 
-Per-environment folder (--env non-prod | production | ...):
-  scripts/users/<env>/enc_user_details.enc  encrypted user list (commit this)
-  scripts/users/<env>/pritunl.conf         URL, admin username, org (no secrets; commit this)
-  scripts/users/<env>/users.csv            plaintext, only while editing (git-ignored, auto-deleted)
-  scripts/users/<env>/profiles/            downloaded profiles (git-ignored: contain private keys)
+Files (scripts/users/):
+  enc_user_details.enc   encrypted list of all VPN users (commit this)
+  pritunl.conf           URL, admin username, org, password secret (no secrets; commit this)
+  users.csv              plaintext, only while editing (git-ignored, auto-deleted)
+  profiles/              downloaded <name>.tar profiles and <name>.details.csv
+                         (git-ignored: private keys / PINs)
 
 Encryption is compatible with:
   openssl enc -aes-256-cbc -salt -pbkdf2 -in users.csv -out enc_user_details.enc
@@ -19,22 +20,22 @@ Encryption is compatible with:
 The passphrase is prompted by openssl, or taken from USERS_ENC_PASSPHRASE if set.
 
 Commands:
-  create   --env ENV    create users (skips existing), download their profiles.
-                        Uses users.csv if present (then encrypts it and deletes it),
-                        otherwise decrypts enc_user_details.enc in memory.
-  decrypt  --env ENV    write users.csv from enc_user_details.enc, to edit it
-  pull     --env ENV    add users that exist on the VPN but not in the file (e.g. created
-                        in the console) to users.csv, so the file lists everyone; then
-                        review and run 'encrypt'
-  encrypt  --env ENV    encrypt users.csv into enc_user_details.enc and delete users.csv
-  list     --env ENV
-  profiles --env ENV [--user NAME ...]
-  disable  --env ENV --user NAME [--user NAME ...]
-  enable   --env ENV --user NAME [--user NAME ...]
-  delete   --env ENV --user NAME [--user NAME ...] [--yes]
+  create              create users (skips existing), save their profiles and details.
+                      Uses users.csv if present (then encrypts it and deletes it),
+                      otherwise decrypts enc_user_details.enc in memory.
+  decrypt             write users.csv from enc_user_details.enc, to edit it
+  pull                add users that exist on the VPN but not in the file (e.g. created
+                      in the console) to users.csv, so the file lists everyone; then
+                      review and run 'encrypt'
+  encrypt             encrypt users.csv into enc_user_details.enc and delete users.csv
+  list
+  profiles [--user NAME ...]
+  disable  --user NAME [--user NAME ...]
+  enable   --user NAME [--user NAME ...]
+  delete   --user NAME [--user NAME ...] [--yes]
 
 Connection settings, highest priority first:
-  flags (--url --username --org --password-secret) > scripts/users/<env>/pritunl.conf
+  flags (--url --username --org --password-secret) > scripts/users/pritunl.conf
   > environment (PRITUNL_URL PRITUNL_USERNAME PRITUNL_ORG PRITUNL_PASSWORD_SECRET).
   Admin password: --password-secret / PRITUNL_PASSWORD_SECRET (Secret Manager), or PRITUNL_PASSWORD.
   --otp CODE if the admin account has 2FA; --insecure for a self-signed certificate.
@@ -157,14 +158,11 @@ class Pritunl:
 
 
 
-# --- environment folder, config and encryption ------------------------------------
+# --- user files, config and encryption ----------------------------------------------
 
-class Env:
-    def __init__(self, name):
-        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
-            raise PritunlError(f"Invalid --env '{name}' (use e.g. non-prod or production)")
-        self.name = name
-        self.dir = os.path.join(USERS_ROOT, name)
+class UserFiles:
+    def __init__(self):
+        self.dir = USERS_ROOT
         self.enc = os.path.join(self.dir, ENC_NAME)
         self.csv = os.path.join(self.dir, CSV_NAME)
         self.conf = os.path.join(self.dir, CONF_NAME)
@@ -188,13 +186,13 @@ def _openssl_pass_args():
     return ["-pass", "env:USERS_ENC_PASSPHRASE"] if os.environ.get("USERS_ENC_PASSPHRASE") else []
 
 
-def decrypt_to_text(env):
-    if not os.path.isfile(env.enc):
-        raise PritunlError(f"{env.enc} not found")
-    print(f"Decrypting {os.path.relpath(env.enc)}", file=sys.stderr)
+def decrypt_to_text(files):
+    if not os.path.isfile(files.enc):
+        raise PritunlError(f"{files.enc} not found")
+    print(f"Decrypting {os.path.relpath(files.enc)}", file=sys.stderr)
     try:
         result = subprocess.run(
-            ["openssl", "enc", "-aes-256-cbc", "-d", "-pbkdf2", "-in", env.enc] + _openssl_pass_args(),
+            ["openssl", "enc", "-aes-256-cbc", "-d", "-pbkdf2", "-in", files.enc] + _openssl_pass_args(),
             stdout=subprocess.PIPE, check=True,
         )
     except FileNotFoundError:
@@ -204,39 +202,39 @@ def decrypt_to_text(env):
     return result.stdout.decode()
 
 
-def encrypt_csv(env):
+def encrypt_csv(files):
     """Encrypt users.csv into enc_user_details.enc (atomically), then delete users.csv."""
-    if not os.path.isfile(env.csv):
-        raise PritunlError(f"{env.csv} not found")
-    tmp = env.enc + ".tmp"
-    print(f"Encrypting {os.path.relpath(env.csv)} -> {os.path.relpath(env.enc)}", file=sys.stderr)
+    if not os.path.isfile(files.csv):
+        raise PritunlError(f"{files.csv} not found")
+    tmp = files.enc + ".tmp"
+    print(f"Encrypting {os.path.relpath(files.csv)} -> {os.path.relpath(files.enc)}", file=sys.stderr)
     try:
         subprocess.run(
-            ["openssl", "enc", "-aes-256-cbc", "-salt", "-pbkdf2", "-in", env.csv, "-out", tmp]
+            ["openssl", "enc", "-aes-256-cbc", "-salt", "-pbkdf2", "-in", files.csv, "-out", tmp]
             + _openssl_pass_args(),
             check=True,
         )
-        os.replace(tmp, env.enc)
+        os.replace(tmp, files.enc)
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         if os.path.exists(tmp):
             os.remove(tmp)
-        raise PritunlError(f"Encryption failed ({e}); {env.csv} was kept") from None
-    os.remove(env.csv)
-    print(f"Deleted {os.path.relpath(env.csv)}", file=sys.stderr)
+        raise PritunlError(f"Encryption failed ({e}); {files.csv} was kept") from None
+    os.remove(files.csv)
+    print(f"Deleted {os.path.relpath(files.csv)}", file=sys.stderr)
 
 
-def decrypt_to_csv(env):
-    if os.path.exists(env.csv):
-        raise PritunlError(f"{env.csv} already exists; edit it, or delete it first")
-    text = decrypt_to_text(env)
-    fd = os.open(env.csv, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+def decrypt_to_csv(files):
+    if os.path.exists(files.csv):
+        raise PritunlError(f"{files.csv} already exists; edit it, or delete it first")
+    text = decrypt_to_text(files)
+    fd = os.open(files.csv, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(text)
-    print(f"Wrote {os.path.relpath(env.csv)} (git-ignored). Run 'encrypt' or 'create' when done.")
+    print(f"Wrote {os.path.relpath(files.csv)} (git-ignored). Run 'encrypt' or 'create' when done.")
 
 
-def write_csv(env, rows):
-    fd = os.open(env.csv, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+def write_csv(files, rows):
+    fd = os.open(files.csv, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["name", "email", "pin"])
         w.writeheader()
@@ -294,7 +292,6 @@ def main():
     sys.stdout.reconfigure(line_buffering=True)  # keep stdout/stderr messages in order
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["create", "decrypt", "encrypt", "pull", "list", "profiles", "disable", "enable", "delete"])
-    p.add_argument("--env", required=True, help="environment folder under scripts/users/, e.g. non-prod or production")
     p.add_argument("--url")
     p.add_argument("--username")
     p.add_argument("--org", help="Pritunl organization name")
@@ -306,13 +303,13 @@ def main():
     p.add_argument("--yes", action="store_true", help="don't ask before deleting")
     args = p.parse_args()
 
-    env = Env(args.env)
+    files = UserFiles()
     if args.command == "decrypt":
-        return decrypt_to_csv(env)
+        return decrypt_to_csv(files)
     if args.command == "encrypt":
-        return encrypt_csv(env)
+        return encrypt_csv(files)
 
-    conf = env.load_conf()
+    conf = files.load_conf()
     setting = lambda flag, key: flag or conf.get(key) or os.environ.get(key)
     url = setting(args.url, "PRITUNL_URL")
     username = setting(args.username, "PRITUNL_USERNAME")
@@ -320,28 +317,28 @@ def main():
     secret = setting(args.password_secret, "PRITUNL_PASSWORD_SECRET")
     missing = [n for n, v in (("URL", url), ("username", username), ("org", org_name)) if not v]
     if missing:
-        p.error(f"missing {', '.join(missing)}: set them in {os.path.relpath(env.conf)} or pass flags")
+        p.error(f"missing {', '.join(missing)}: set them in {os.path.relpath(files.conf)} or pass flags")
 
     # Read the user list before logging in, so a wrong passphrase fails fast.
     rows, from_plain_csv = None, False
     if args.command == "pull":
-        if os.path.isfile(env.csv):
-            with open(env.csv) as f:
+        if os.path.isfile(files.csv):
+            with open(files.csv) as f:
                 rows = parse_csv(f.read())
-        elif os.path.isfile(env.enc):
-            rows = parse_csv(decrypt_to_text(env))
+        elif os.path.isfile(files.enc):
+            rows = parse_csv(decrypt_to_text(files))
         else:
             rows = []
     if args.command == "create":
-        if os.path.isfile(env.csv):
-            print(f"Using {os.path.relpath(env.csv)}", file=sys.stderr)
-            with open(env.csv) as f:
+        if os.path.isfile(files.csv):
+            print(f"Using {os.path.relpath(files.csv)}", file=sys.stderr)
+            with open(files.csv) as f:
                 rows = parse_csv(f.read())
             from_plain_csv = True
         else:
-            rows = parse_csv(decrypt_to_text(env))
+            rows = parse_csv(decrypt_to_text(files))
 
-    print(f"[{env.name}] {url} org={org_name}", file=sys.stderr)
+    print(f"[VPN] {url} org={org_name}", file=sys.stderr)
     api = Pritunl(url, insecure=args.insecure)
     api.login(username, get_password(secret), args.otp)
     org = api.org_id(org_name)
@@ -351,14 +348,14 @@ def main():
         on_server = api.users(org)
         added = [u for u in on_server if u["name"].lower() not in in_file]
         rows += [{"name": u["name"], "email": u.get("email") or "", "pin": ""} for u in added]
-        write_csv(env, rows)
+        write_csv(files, rows)
         server_names = {u["name"].lower() for u in on_server}
         pending = [r["name"] for r in rows if r["name"].lower() not in server_names]
         for u in added:
             print(f"added    {u['name']} (from VPN)")
         for name in pending:
             print(f"pending  {name} (in file, not on VPN yet: 'create' will add it)")
-        print(f"\n{len(rows)} users in {os.path.relpath(env.csv)} ({len(added)} added from VPN). "
+        print(f"\n{len(rows)} users in {os.path.relpath(files.csv)} ({len(added)} added from VPN). "
               f"Review/edit it, then run 'encrypt' (or 'create' if you added people).")
         return
 
@@ -383,25 +380,25 @@ def main():
         for name in skipped:
             print(f"skipped  {name} (already exists, left unchanged)")
         for row in created:
-            path = api.download_profile(org, api.user_by_name(org, row["name"]), env.profiles)
+            path = api.download_profile(org, api.user_by_name(org, row["name"]), files.profiles)
             print(f"profile  {row['name']} -> {os.path.relpath(path)}")
-            details = write_user_details(env.profiles, row)
+            details = write_user_details(files.profiles, row)
             print(f"details  {row['name']} -> {os.path.relpath(details)}")
         print(f"\n{len(created)} created, {len(skipped)} skipped")
         if from_plain_csv and not args.keep_csv:
-            encrypt_csv(env)
+            encrypt_csv(files)
 
     elif args.command == "profiles":
         targets = [api.user_by_name(org, n) for n in args.user] if args.user else api.users(org)
         for u in targets:
-            print(f"profile  {u['name']} -> {os.path.relpath(api.download_profile(org, u, env.profiles))}")
+            print(f"profile  {u['name']} -> {os.path.relpath(api.download_profile(org, u, files.profiles))}")
 
     elif args.command in ("disable", "enable", "delete"):
         if not args.user:
             p.error(f"{args.command} needs --user")
         users = [api.user_by_name(org, n) for n in args.user]
         if args.command == "delete" and not args.yes:
-            answer = input(f"[{env.name}] Delete {', '.join(u['name'] for u in users)} permanently? [y/N] ")
+            answer = input(f"Delete {', '.join(u['name'] for u in users)} permanently? [y/N] ")
             if answer.strip().lower() != "y":
                 print("aborted")
                 return

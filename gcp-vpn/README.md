@@ -132,45 +132,37 @@ How it works:
 
 The free edition has no API. [`scripts/pritunl_users.py`](scripts/pritunl_users.py) logs in to the console as an admin and calls the same endpoints the web console uses. It needs only Python 3 and `openssl`.
 
-Each VPN environment has its own folder:
-
 ```
-scripts/users/<env>/            # <env> = non-prod, production, ...
-├── enc_user_details.enc        # encrypted user list (committed)
-├── pritunl.conf                # URL, admin username, organization; no secrets (committed)
+scripts/users/
+├── enc_user_details.enc        # encrypted list of all VPN users (committed)
+├── pritunl.conf                # URL, admin username, organization, password secret name (committed)
 ├── users.csv                   # plaintext, only while editing (git-ignored, deleted automatically)
-└── profiles/                   # downloaded .tar profiles (git-ignored: they contain private keys)
+└── profiles/                   # <name>.tar profiles and <name>.details.csv (git-ignored)
 ```
 
 The encryption matches `openssl enc -aes-256-cbc -salt -pbkdf2`, so files work with the manual `openssl` commands in both directions. `openssl` prompts for the passphrase, or set `USERS_ENC_PASSPHRASE`.
 
 ```bash
-export PRITUNL_PASSWORD='<console admin password>'   # or PRITUNL_PASSWORD_SECRET in pritunl.conf
-
 # One time: bring users created in the console into the file, so it lists everyone
-python3 scripts/pritunl_users.py pull    --env non-prod      # writes users.csv; review, then:
-python3 scripts/pritunl_users.py encrypt --env non-prod
+python3 scripts/pritunl_users.py pull           # writes users.csv; review, then:
+python3 scripts/pritunl_users.py encrypt
 
-# Add users: decrypt, edit, create (re-encrypts and deletes users.csv afterwards)
-python3 scripts/pritunl_users.py decrypt --env non-prod
-vi scripts/users/non-prod/users.csv
-python3 scripts/pritunl_users.py create  --env non-prod      # profiles -> scripts/users/non-prod/profiles/
+# Add users: decrypt, append rows, create (re-encrypts and deletes users.csv afterwards)
+python3 scripts/pritunl_users.py decrypt
+vi scripts/users/users.csv
+python3 scripts/pritunl_users.py create         # profiles + details -> scripts/users/profiles/
 
-# Re-run from the encrypted list only (decrypted in memory, no plaintext on disk)
-python3 scripts/pritunl_users.py create  --env non-prod
-
-python3 scripts/pritunl_users.py list    --env non-prod
-python3 scripts/pritunl_users.py disable --env non-prod --user bob      # reversible: enable
-python3 scripts/pritunl_users.py delete  --env non-prod --user bob      # asks for confirmation
-python3 scripts/pritunl_users.py profiles --env production --user alice
-python3 scripts/pritunl_users.py encrypt --env non-prod                 # encrypt + delete users.csv manually
+python3 scripts/pritunl_users.py list
+python3 scripts/pritunl_users.py disable --user bob     # reversible: enable
+python3 scripts/pritunl_users.py delete  --user bob     # asks for confirmation
+python3 scripts/pritunl_users.py profiles --user alice  # re-download a profile
 ```
 
 - **CSV:** `name,email,pin`; email and pin are optional. See [`scripts/users.example.csv`](scripts/users.example.csv).
-- **One file for everyone:** `enc_user_details.enc` is the list of all VPN users for that environment. Add users through it rather than in the console. If someone is added in the console anyway, `pull` brings them into the file. `pull` only adds missing names; it doesn't change existing rows.
+- **One file for everyone:** `enc_user_details.enc` is the list of all VPN users. Add users through it rather than in the console. If someone is added in the console anyway, `pull` brings them into the file. `pull` only adds missing names; it doesn't change existing rows.
 - **Duplicates:** `create` skips existing users. Names are compared case-insensitively, including repeats within the CSV. Existing users are left unchanged.
-- **Settings:** `pritunl.conf` takes precedence over environment variables, so `--env production` always talks to the production VPN. Flags (`--url`, `--username`, `--org`, `--password-secret`) take precedence over both.
-- **Profiles:** for each newly created user, `create` saves `<name>.tar` (the VPN profile) and `<name>.details.csv` (that user's `name,email,pin` only) in `profiles/`. Both are sensitive: the `.tar` has a private key and the CSV may have a PIN. The `.tar` files contain private keys. They're readable by your account only and never committed. Share them securely.
+- **Profiles:** for each newly created user, `create` saves `<name>.tar` (the VPN profile) and `<name>.details.csv` (that user's `name,email,pin` only) in `scripts/users/profiles/`. Both are sensitive (a private key, possibly a PIN), are readable by your account only, and are never committed. Share them securely.
+- **Settings:** `scripts/users/pritunl.conf` holds the URL, admin username, organization and the Secret Manager path of the admin password. Flags (`--url`, `--username`, `--org`, `--password-secret`) override it.
 - **Where to run it:** from an allow-listed admin IP, or over the VPN. Add `--otp` for admin 2FA, and `--insecure` for a self-signed certificate.
 - **Not an official API:** after a Pritunl upgrade, run `list` first. Pritunl Enterprise offers a supported API and SSO.
 
