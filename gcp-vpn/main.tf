@@ -7,6 +7,7 @@ resource "google_project_service" "required" {
       "logging.googleapis.com",
       "monitoring.googleapis.com",
       "oslogin.googleapis.com",
+      "storage.googleapis.com",
     ],
     var.create_kms_key ? ["cloudkms.googleapis.com"] : [],
   ))
@@ -76,8 +77,9 @@ module "pritunl" {
   kms_key_self_link   = var.create_kms_key ? module.kms[0].crypto_key_id : null
   labels              = var.labels
 
-  mongodb_version   = var.mongodb_version
-  install_ops_agent = var.install_ops_agent
+  mongodb_version            = var.mongodb_version
+  install_ops_agent          = var.install_ops_agent
+  ship_logs_to_cloud_logging = var.ship_logs_to_cloud_logging
 
   vpn_udp_ports       = var.vpn_udp_ports
   admin_source_ranges = var.admin_source_ranges
@@ -118,4 +120,25 @@ module "pritunl_restore" {
   data_device_name      = module.pritunl.data_device_name
   kms_key_self_link     = var.create_kms_key ? module.kms[0].crypto_key_id : null
   labels                = var.labels
+}
+
+# Long-term archive of Pritunl logs (main and restore servers) in Cloud Storage.
+module "log_archive" {
+  source = "./modules/log-archive"
+  count  = var.enable_log_archive ? 1 : 0
+
+  project_id          = var.project_id
+  name                = var.vm_name
+  bucket_name         = coalesce(var.log_archive_bucket_name, "${var.project_id}-pritunl-logs")
+  location            = var.region
+  retention_days      = var.log_archive_retention_days
+  coldline_after_days = var.log_archive_coldline_after_days
+  labels              = var.labels
+  log_filter          = <<-EOT
+    resource.type="gce_instance" AND
+    (logName="projects/${var.project_id}/logs/pritunl_journal" OR
+     logName="projects/${var.project_id}/logs/pritunl_app")
+  EOT
+
+  depends_on = [google_project_service.required]
 }

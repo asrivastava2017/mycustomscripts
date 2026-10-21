@@ -63,3 +63,8 @@ output "restore_server" {
     ssh_command = module.pritunl_restore[0].ssh_command
   }
 }
+
+output "log_archive_bucket" {
+  description = "Cloud Storage bucket holding archived Pritunl logs (null if disabled)."
+  value       = var.enable_log_archive ? module.log_archive[0].bucket_name : null
+}

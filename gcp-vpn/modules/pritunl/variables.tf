@@ -115,6 +115,12 @@ variable "mongodb_version" {
   default     = "8.0"
 }
 
+variable "ship_logs_to_cloud_logging" {
+  description = "Configure the Ops Agent to send Pritunl's logs (/var/log/pritunl_journal.log as JSON, pritunl.log, startup log) to Cloud Logging. Needs install_ops_agent = true."
+  type        = bool
+  default     = true
+}
+
 variable "install_ops_agent" {
   description = "Install the Google Cloud Ops Agent for logs and metrics."
   type        = bool

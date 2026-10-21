@@ -136,6 +136,12 @@ variable "mongodb_version" {
   default     = "8.0"
 }
 
+variable "ship_logs_to_cloud_logging" {
+  description = "Send Pritunl's logs (event journal, app log, startup log) to Cloud Logging via the Ops Agent."
+  type        = bool
+  default     = true
+}
+
 variable "install_ops_agent" {
   description = "Install the Google Cloud Ops Agent."
   type        = bool
@@ -259,4 +265,30 @@ variable "restore" {
     zone          = optional(string) # default: same as zone
   })
   default = null
+}
+
+# --- Log archive ----------------------------------------------------------------------
+
+variable "enable_log_archive" {
+  description = "Archive Pritunl logs from Cloud Logging to a Cloud Storage bucket."
+  type        = bool
+  default     = true
+}
+
+variable "log_archive_bucket_name" {
+  description = "Archive bucket name (globally unique). null = \"<project_id>-pritunl-logs\"."
+  type        = string
+  default     = null
+}
+
+variable "log_archive_retention_days" {
+  description = "Delete archived logs after this many days."
+  type        = number
+  default     = 365
+}
+
+variable "log_archive_coldline_after_days" {
+  description = "Move archived logs to Coldline storage after this many days (0 = never)."
+  type        = number
+  default     = 30
 }

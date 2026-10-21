@@ -122,3 +122,13 @@ snapshot_before_vm_replace = true
 # }
 # Set back to null (and apply) to delete the restore server, its disks and its IP.
 restore = null
+
+# --- Logs -----------------------------------------------------------------------------
+# Pritunl's logs (event journal as JSON, app log, startup log) go to Cloud Logging via
+# the Ops Agent (log names pritunl_journal, pritunl_app; ~30 days there by default),
+# and are archived to gs://<project>-pritunl-logs: Coldline after 30 days, deleted after 365.
+# Changing ship_logs_to_cloud_logging recreates the VM (startup script change).
+ship_logs_to_cloud_logging      = true
+enable_log_archive              = true
+log_archive_retention_days      = 365
+log_archive_coldline_after_days = 30

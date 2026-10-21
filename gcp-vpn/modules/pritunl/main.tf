@@ -16,6 +16,7 @@ locals {
     data_mount_path    = local.data_mount_path
     mongodb_version    = var.mongodb_version
     install_ops_agent  = var.install_ops_agent
+    ship_pritunl_logs  = var.ship_logs_to_cloud_logging
     letsencrypt_domain = var.letsencrypt_domain == null ? "" : var.letsencrypt_domain
   })
 }

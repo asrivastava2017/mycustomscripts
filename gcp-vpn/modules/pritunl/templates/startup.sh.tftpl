@@ -14,6 +14,7 @@ DATA_DEVICE="/dev/disk/by-id/google-${data_device_name}"
 DATA_MOUNT="${data_mount_path}"
 MONGODB_VERSION="${mongodb_version}"
 INSTALL_OPS_AGENT="${install_ops_agent}"
+SHIP_PRITUNL_LOGS="${ship_pritunl_logs}"
 LETSENCRYPT_DOMAIN="${letsencrypt_domain}"
 
 . /etc/os-release
@@ -256,9 +257,46 @@ else
 fi
 
 # --- 6. Optional: Google Cloud Ops Agent for logs and metrics -------------------------
-if [ "$INSTALL_OPS_AGENT" = "true" ] && ! systemctl is-active --quiet google-cloud-ops-agent; then
-  curl -sSfL https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh -o /tmp/add-ops-agent.sh
-  bash /tmp/add-ops-agent.sh --also-install || echo "ops agent install failed; continuing"
+if [ "$INSTALL_OPS_AGENT" = "true" ]; then
+  if ! systemctl is-enabled --quiet google-cloud-ops-agent 2>/dev/null; then
+    curl -sSfL https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh -o /tmp/add-ops-agent.sh
+    bash /tmp/add-ops-agent.sh --also-install || echo "ops agent install failed; continuing"
+  fi
+
+  # Send Pritunl's logs to Cloud Logging, so they survive VM recreates (the boot disk,
+  # and /var/log with it, is replaced each time). Log names: pritunl_journal (JSON
+  # events: connections, profile downloads, admin logins...) and pritunl_app.
+  if [ "$SHIP_PRITUNL_LOGS" = "true" ] && [ -d /etc/google-cloud-ops-agent ]; then
+    cat > /tmp/ops-agent-config.yaml <<'OPSAGENTCONFIG'
+# Managed by the Pritunl startup script (Terraform). Merged with the agent's defaults.
+logging:
+  receivers:
+    pritunl_journal:
+      type: files
+      include_paths:
+        - /var/log/pritunl_journal.log
+    pritunl_app:
+      type: files
+      include_paths:
+        - /var/log/pritunl.log
+        - /var/log/pritunl-startup.log
+  processors:
+    parse_pritunl_journal:
+      type: parse_json
+  service:
+    pipelines:
+      pritunl_journal:
+        receivers: [pritunl_journal]
+        processors: [parse_pritunl_journal]
+      pritunl_app:
+        receivers: [pritunl_app]
+OPSAGENTCONFIG
+    if ! cmp -s /tmp/ops-agent-config.yaml /etc/google-cloud-ops-agent/config.yaml; then
+      install -m 0644 /tmp/ops-agent-config.yaml /etc/google-cloud-ops-agent/config.yaml
+      systemctl restart google-cloud-ops-agent || echo "ops agent restart failed; continuing"
+      echo "ops agent: shipping Pritunl logs to Cloud Logging"
+    fi
+  fi
 fi
 
 echo "=== pritunl startup finished $(date -Is) ==="

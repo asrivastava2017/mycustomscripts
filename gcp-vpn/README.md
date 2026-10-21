@@ -158,6 +158,39 @@ If Pritunl breaks (a bad upgrade, corrupted data, a broken configuration), launc
 - **Removing it:** set `restore = null` and apply. That **deletes** the restore VM, its disks and its IP. Point DNS back to the main server first if users were moved.
 - **Startup script:** the restore VM uses the same startup script as the main server. On the restored disks it doesn't reinstall anything; it only mounts the data and restarts MongoDB and Pritunl.
 
+## Logs and audit trail
+
+Pritunl writes its logs on the VM. The boot disk, and `/var/log` with it, is replaced whenever the VM is recreated, so the logs are shipped off the VM:
+
+| Log | On the VM | In Cloud Logging (log name) |
+| --- | --- | --- |
+| Event journal: connections, profile downloads, admin logins, user and server changes (JSON) | `/var/log/pritunl_journal.log` | `pritunl_journal`, with fields parsed |
+| Application log | `/var/log/pritunl.log` | `pritunl_app` |
+| Startup script log | `/var/log/pritunl-startup.log` | `pritunl_app` |
+
+- **Cloud Logging:** with `ship_logs_to_cloud_logging = true` (the default), the startup script configures the Ops Agent to send these files. They're kept for **30 days** in the `_Default` log bucket. Logs Explorer queries:
+  ```
+  logName="projects/<project>/logs/pritunl_journal"
+  logName="projects/<project>/logs/pritunl_journal" AND jsonPayload.user_name="kajal.s"
+  ```
+  The exact field names come from Pritunl's journal; open one entry to see them.
+- **Auditing must be on for the journal to have events.** Pritunl writes `pritunl_journal` entries only when `app.auditing = all`, which is off by default. It was enabled on this server with `sudo pritunl set app.auditing all`. The setting lives in MongoDB on the data disk, so it survives VM recreates and restores, and it **can't be turned off again**. Pritunl markets auditing as an Enterprise feature. Useful queries (prefix each with `logName="projects/<project>/logs/pritunl_journal" AND`):
+
+  | What | Filter |
+  | --- | --- |
+  | VPN connections | `jsonPayload.event="user_connect_success"` |
+  | Disconnections | `jsonPayload.event="user_disconnect"` |
+  | Failed VPN connections | `jsonPayload.event="user_connect_failure"` |
+  | One user's activity | `jsonPayload.user_name="kajal.s"` |
+  | Admin console logins / failures | `jsonPayload.event=("admin_auth_success" OR "admin_auth_failure")` |
+  | Profile downloads | `jsonPayload.event="user_profile_success"` |
+- **Archive:** with `enable_log_archive = true`, a Cloud Logging sink copies both logs, from the main and restore servers, to `gs://<project>-pritunl-logs`. Files arrive in **hourly batches** under `pritunl_journal/YYYY/MM/DD/`. They move to Coldline after `log_archive_coldline_after_days` (30) and are deleted after `log_archive_retention_days` (365). The bucket blocks public access and won't be deleted while it holds logs.
+  ```bash
+  gcloud storage ls -r gs://<project>-pritunl-logs/ | tail
+  ```
+- **Also relevant:** VPC Flow Logs (network traffic from the VPN VM) and Cloud Audit Logs (infrastructure changes and IAP SSH sessions) are in Cloud Logging too.
+- **Enabling or disabling** `ship_logs_to_cloud_logging` changes the startup script, so the VM is recreated (with the automatic pre-change snapshots). The archive settings don't affect the VM.
+
 ## Automating VPN users
 
 The free edition has no API. [`scripts/pritunl_users.py`](scripts/pritunl_users.py) logs in to the console as an admin and calls the same endpoints the web console uses. It needs only Python 3 and `openssl`.
